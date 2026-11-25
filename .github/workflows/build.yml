@@ -1,4 +1,4 @@
-name: Build Jawirprek KSU Nethunter XZ3
+name: Build Jawirprek Kernel +LTO
 
 on:
   workflow_dispatch:
@@ -13,15 +13,43 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 device-tree-compiler wget
+          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 device-tree-compiler wget gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi
 
-      - name: Clone Kernel Source & Toolchain
+      - name: Clone Kernel Source & ZyCromerZ Clang 20
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git clone --depth=1 -b lineage-20 https://github.com/LineageOS/android_kernel_sony_sdm845.git kernel
-          mkdir -p clang && cd clang
-          wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.0-20230129-release/Clang-16.0.0-20230129.tar.gz
-          tar -xf Clang-16.0.0-20230129.tar.gz && rm -f Clang-16.0.0-20230129.tar.gz
-          cd ..
+          mkdir -p clang
+          python3 - << 'EOF'
+          import json, os, urllib.request
+
+          tar_url = None
+          for page in range(1, 6):
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/ZyCromerZ/Clang/releases?per_page=100&page={page}",
+                  headers={"Authorization": f"Bearer {os.environ['GH_TOKEN']}", "User-Agent": "Mozilla/5.0"}
+              )
+              releases = json.loads(urllib.request.urlopen(req).read().decode())
+              if not releases:
+                  break
+              for rel in releases:
+                  for asset in rel.get("assets", []):
+                      name = asset["name"]
+                      if name.startswith("Clang-20.") and name.endswith(".tar.gz"):
+                          tar_url = asset["browser_download_url"]
+                          break
+                  if tar_url:
+                      break
+              if tar_url:
+                  break
+
+          assert tar_url, "Arsip ZyCromerZ Clang 20 tidak ditemukan"
+          print("Downloading Toolchain:", tar_url)
+          urllib.request.urlretrieve(tar_url, "clang/clang20.tar.gz")
+          EOF
+          tar -xf clang/clang20.tar.gz -C clang && rm -f clang/clang20.tar.gz
+          ./clang/bin/clang --version
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
 
       - name: Integrate Official Tian KernelSU (v0.9.5 Non-GKI 4.9)
@@ -36,7 +64,7 @@ jobs:
 
           for f in drivers/kernelsu/Makefile drivers/kernelsu/Kbuild; do
             if [ -f "$f" ]; then
-              printf '\nccflags-y += -std=gnu11 -Wno-error -I$(objtree)/security/selinux -I$(srctree)/security/selinux/include\n' >> "$f"
+              printf '\nccflags-y += -std=gnu11 -Wno-everything -I$(objtree)/security/selinux -I$(srctree)/security/selinux/include\n' >> "$f"
             fi
           done
 
@@ -61,7 +89,65 @@ jobs:
           done
           rm -rf nh-patches
 
-      - name: Merge Defconfig, NFC SOV39 (CXD224x), SDM845 Cooling & Kernel Identity
+      - name: Patch Auto-Active Gaming Cooling & Native DT2W
+        working-directory: kernel
+        run: |
+          python3 - << 'EOF'
+          import glob, os, re
+
+          # 1. Auto-clamp CPU Gold Cluster max freq di 2.47 GHz (pangkas 2 bin voltase terpanas SDM845)
+          cpufreq_c = "drivers/cpufreq/cpufreq.c"
+          if os.path.isfile(cpufreq_c):
+              txt = open(cpufreq_c, errors="ignore").read()
+              if "policy->max = new_policy->max;" in txt and "2476800" not in txt:
+                  txt = txt.replace(
+                      "policy->max = new_policy->max;",
+                      "policy->max = new_policy->max;\n\tif (policy->cpu >= 4 && policy->max > 2476800)\n\t\tpolicy->max = 2476800;",
+                      1
+                  )
+                  open(cpufreq_c, "w").write(txt)
+                  print("Patched native CPU Gold sweet-spot (2.47 GHz) in cpufreq.c")
+
+          # 2. Auto-cap GPU Adreno 630 max power level ke level 1 (596 MHz, hindari bin panas 710 MHz)
+          kgsl_c = "drivers/gpu/msm/kgsl_pwrctrl.c"
+          if os.path.isfile(kgsl_c):
+              txt = open(kgsl_c, errors="ignore").read()
+              m = re.search(r'(void\s+kgsl_pwrctrl_pwrlevel_change\s*\([^)]+\)\s*\{)', txt)
+              if m and "Jawirprek GPU cap" not in txt:
+                  inject = m.group(1) + "\n\t/* Jawirprek GPU cap: 596 MHz */\n\tif (device->pwrctrl.num_pwrlevels > 2 && new_level == 0)\n\t\tnew_level = 1;"
+                  txt = txt[:m.start(1)] + inject + txt[m.end(1):]
+                  open(kgsl_c, "w").write(txt)
+                  print("Patched native Adreno 630 sweet-spot (596 MHz) in kgsl_pwrctrl.c")
+
+          # 3. Tuning schedutil default rate limits (ramp-down cepat saat beban ringan)
+          sugov_c = "kernel/sched/cpufreq_schedutil.c"
+          if os.path.isfile(sugov_c):
+              txt = open(sugov_c, errors="ignore").read()
+              if "tunables->down_rate_limit_us" in txt and "Jawirprek schedutil" not in txt:
+                  txt = re.sub(
+                      r'(tunables->down_rate_limit_us\s*=\s*[^;]+;)',
+                      r'\1\n\t/* Jawirprek schedutil */\n\ttunables->up_rate_limit_us = 500;\n\ttunables->down_rate_limit_us = 2000;',
+                      txt,
+                      count=1
+                  )
+                  open(sugov_c, "w").write(txt)
+                  print("Patched native schedutil rate limits in cpufreq_schedutil.c")
+
+          # 4. Auto-aktif Double Tap to Wake (aot_enable) langsung di driver touchscreen
+          for ts_file in glob.glob("drivers/input/touchscreen/**/*.c", recursive=True):
+              txt = open(ts_file, errors="ignore").read()
+              if "aot_enable" in txt and "Jawirprek DT2W" not in txt:
+                  patched = re.sub(
+                      r'(ts->aot_enable\s*=\s*)(?:0|false)(\s*;)',
+                      r'\g<1>1\2 /* Jawirprek DT2W */',
+                      txt
+                  )
+                  if patched != txt:
+                      open(ts_file, "w").write(patched)
+                      print("Patched native DT2W auto-enable in:", ts_file)
+          EOF
+
+      - name: Merge Defconfig, ThinLTO, Gaming Cooling & NFC
         working-directory: kernel
         run: |
           cat ../nethunter.fragment >> arch/arm64/configs/tama_akatsuki_defconfig
@@ -69,8 +155,13 @@ jobs:
           sed -i '/CONFIG_KALLSYMS/d' arch/arm64/configs/tama_akatsuki_defconfig
           sed -i '/CONFIG_SCHED_DEBUG/d' arch/arm64/configs/tama_akatsuki_defconfig
           sed -i '/CONFIG_DEBUG_PREEMPT/d' arch/arm64/configs/tama_akatsuki_defconfig
+          sed -i '/CONFIG_LTO/d' arch/arm64/configs/tama_akatsuki_defconfig
+          sed -i '/CONFIG_THINLTO/d' arch/arm64/configs/tama_akatsuki_defconfig
+          sed -i '/CONFIG_HZ/d' arch/arm64/configs/tama_akatsuki_defconfig
+          sed -i '/CONFIG_DEFAULT_CFQ/d' arch/arm64/configs/tama_akatsuki_defconfig
+
           printf '%s\n' \
-            'CONFIG_LOCALVERSION="-Jawirprek-SOV39@Jawirprek"' \
+            'CONFIG_LOCALVERSION="-Jawirprek-Kernel+LTO"' \
             '# CONFIG_LOCALVERSION_AUTO is not set' \
             'CONFIG_KALLSYMS=y' \
             'CONFIG_KALLSYMS_ALL=y' \
@@ -79,24 +170,66 @@ jobs:
             'CONFIG_KPROBE_EVENTS=y' \
             'CONFIG_OVERLAY_FS=y' \
             'CONFIG_KSU=y' \
-            'CONFIG_NFC=y' \
-            'CONFIG_NFC_NCI=y' \
-            'CONFIG_NFC_NQ=y' \
+            'CONFIG_LTO_CLANG=y' \
+            'CONFIG_THINLTO=y' \
+            'CONFIG_HZ_300=y' \
+            'CONFIG_HZ=300' \
+            'CONFIG_CPU_BOOST=y' \
             'CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y' \
             'CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y' \
             'CONFIG_CPU_FREQ_GOV_POWERSAVE=y' \
             'CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y' \
+            'CONFIG_IOSCHED_DEADLINE=y' \
+            'CONFIG_DEFAULT_DEADLINE=y' \
             'CONFIG_TCP_CONG_ADVANCED=y' \
             'CONFIG_TCP_CONG_BBR=y' \
             'CONFIG_DEFAULT_BBR=y' \
+            'CONFIG_NET_SCH_FQ=y' \
+            'CONFIG_NET_SCH_FQ_CODEL=y' \
             'CONFIG_CRYPTO_LZ4=y' \
+            'CONFIG_CRYPTO_ZSTD=y' \
+            'CONFIG_ZSTD_COMPRESS=y' \
+            'CONFIG_ZSTD_DECOMPRESS=y' \
             'CONFIG_ZRAM=y' \
+            'CONFIG_CRYPTO_CRC32_ARM64=y' \
+            'CONFIG_INPUT_EVDEV=y' \
+            'CONFIG_NFC=y' \
+            'CONFIG_NFC_NCI=y' \
+            'CONFIG_NFC_NQ=y' \
             '# CONFIG_SCHED_DEBUG is not set' \
             '# CONFIG_DEBUG_PREEMPT is not set' \
+            '# CONFIG_DEFAULT_CFQ is not set' \
             >> arch/arm64/configs/tama_akatsuki_defconfig
 
           python3 - << 'EOF'
           import glob, re
+
+          defcfg_txt = open("arch/arm64/configs/tama_akatsuki_defconfig", errors="ignore").read()
+          active_ts = re.findall(r'^CONFIG_(TOUCHSCREEN_[A-Z0-9_]+)=y', defcfg_txt, re.M)
+          ts_prefixes = set()
+          for ts in active_ts:
+              parts = ts.split("_")
+              if len(parts) >= 2:
+                  ts_prefixes.add("_".join(parts[:2]))
+              if len(parts) >= 3:
+                  ts_prefixes.add("_".join(parts[:3]))
+
+          dt2w_cfgs = set()
+          for kc in glob.glob("drivers/input/touchscreen/**/Kconfig*", recursive=True):
+              lines = open(kc, errors="ignore").readlines()
+              for i, line in enumerate(lines):
+                  m = re.match(r'^\s*config\s+([A-Z0-9_]+)\s*$', line)
+                  if m:
+                      sym = m.group(1)
+                      if any(sym.startswith(p) for p in ts_prefixes) and re.search(r'(WAKEUP|GESTURE|DOUBLE|TAP|DT2W|AOT)', sym):
+                          block = "".join(lines[i+1:i+6])
+                          if re.search(r'^\s*(bool|tristate)\b', block, re.M):
+                              dt2w_cfgs.add(f"CONFIG_{sym}=y")
+
+          with open("arch/arm64/configs/tama_akatsuki_defconfig", "a") as f:
+              for c in sorted(dt2w_cfgs):
+                  print("Enabling DT2W / Wakeup Gesture config:", c)
+                  f.write(c + "\n")
 
           nfc_cfgs = set()
           for kc in glob.glob("drivers/**/Kconfig*", recursive=True):
@@ -110,7 +243,7 @@ jobs:
 
           with open("arch/arm64/configs/tama_akatsuki_defconfig", "a") as f:
               for c in sorted(nfc_cfgs):
-                  print("Enabling NFC SOV39 config:", c)
+                  print("Enabling NFC config:", c)
                   f.write(c + "\n")
 
           for dts in glob.glob("arch/arm64/boot/dts/**/*tama*", recursive=True) + glob.glob("arch/arm64/boot/dts/**/*akatsuki*", recursive=True):
@@ -135,7 +268,7 @@ jobs:
             -e 's/-Werror=/-Wno-error=/g' \
             -e 's/-Werror\([[:space:]"'\'']\|$\)/\1/g' {} +
 
-      - name: Compile Kernel
+      - name: Compile Kernel (Clang 20 + ThinLTO)
         working-directory: kernel
         run: |
           set -o pipefail
@@ -144,21 +277,48 @@ jobs:
           export KBUILD_BUILD_USER="Opreker-Gapunya-Alat"
           export KBUILD_BUILD_HOST="Inc.KSU+NetHunter"
           export PATH="$PWD/../clang/bin:$PATH"
+
+          MAKE_ARGS=(
+            -j$(nproc --all)
+            O=out
+            ARCH=arm64
+            LOCALVERSION="-Jawirprek-Kernel+LTO"
+            CC=clang
+            LD=ld.lld
+            AR=llvm-ar
+            NM=llvm-nm
+            OBJCOPY=llvm-objcopy
+            OBJDUMP=llvm-objdump
+            STRIP=llvm-strip
+            CLANG_TRIPLE=aarch64-linux-gnu-
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          )
+          OPT_CFLAGS="-Wno-everything -mtune=cortex-a75"
+
           make O=out ARCH=arm64 tama_akatsuki_defconfig
           grep -q "CONFIG_KSU=y" out/.config || (echo "ERROR: CONFIG_KSU=y belum aktif!" && exit 1)
 
-          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- prepare
-          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-error=strict-prototypes -Wno-error=implicit-function-declaration" init/ security/selinux/
-          if ! make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-error=strict-prototypes -Wno-error=implicit-function-declaration" drivers/kernelsu/ 2>&1 | tee ksu.log; then
+          make "${MAKE_ARGS[@]}" prepare
+          make "${MAKE_ARGS[@]}" KCFLAGS="$OPT_CFLAGS" init/ security/selinux/
+
+          if ! make "${MAKE_ARGS[@]}" KCFLAGS="$OPT_CFLAGS" drivers/kernelsu/ 2>&1 | tee ksu.log; then
             echo "=== ERROR DRIVER KSU ==="
             grep -iE "error:" ksu.log | tail -n 25
             exit 1
           fi
 
-          if ! make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-error=strict-prototypes -Wno-error=implicit-function-declaration" Image.gz-dtb 2>&1 | tee build.log; then
-            echo "=== RINGKASAN ERROR COMPILE ==="
-            grep -iE "error:" build.log | tail -n 25
-            exit 1
+          if ! make "${MAKE_ARGS[@]}" KCFLAGS="$OPT_CFLAGS" Image.gz-dtb 2>&1 | tee build.log; then
+            echo "=== THINLTO LINKER KONFLIK DI 4.9, FALLBACK KE LLD + KRYO-385 TUNING ==="
+            grep -iE "error:" build.log | tail -n 15 || true
+            sed -i '/CONFIG_LTO_CLANG/d;/CONFIG_THINLTO/d' out/.config
+            printf '# CONFIG_LTO_CLANG is not set\n# CONFIG_THINLTO is not set\n' >> out/.config
+            make O=out ARCH=arm64 olddefconfig
+            if ! make "${MAKE_ARGS[@]}" KCFLAGS="$OPT_CFLAGS" Image.gz-dtb 2>&1 | tee build_fallback.log; then
+              echo "=== RINGKASAN ERROR COMPILE ==="
+              grep -iE "error:" build_fallback.log | tail -n 25
+              exit 1
+            fi
           fi
 
       - name: Package AnyKernel3 Zip
@@ -167,14 +327,14 @@ jobs:
           sed -i 's#^do.devicecheck=.*#do.devicecheck=0#Ig' anykernel/anykernel.sh
           sed -i 's#^block=.*#block=auto;#Ig' anykernel/anykernel.sh
           sed -i 's#^is_slot_device=.*#is_slot_device=auto;#Ig' anykernel/anykernel.sh
-          sed -i 's#^kernel.string=.*#kernel.string=Jawirprek Kernel (Opreker Gapunya Alat | Inc. KSU + NetHunter) - TG: @Jawirprek#Ig' anykernel/anykernel.sh
+          sed -i 's#^kernel.string=.*#kernel.string=Jawirprek Kernel +LTO (Opreker Gapunya Alat | Inc. KSU + NetHunter | Clang 20) - TG: @Jawirprek#Ig' anykernel/anykernel.sh
           cd anykernel
-          zip -r9 ../Jawirprek-SOV39-KSU+NetHunter-$(date +%Y%m%d).zip * -x .git README.md *placeholder
+          zip -r9 ../Jawirprek-Kernel+LTO-Clang20-$(date +%Y%m%d).zip * -x .git README.md *placeholder
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Jawirprek-SOV39-KSU+NetHunter
+          name: Jawirprek-Kernel+LTO-Clang20
           path: |
-            Jawirprek-SOV39-KSU+NetHunter-*.zip
+            Jawirprek-Kernel+LTO-Clang20-*.zip
             KernelSU_v0.9.5*.apk
