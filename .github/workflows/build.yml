@@ -35,6 +35,47 @@ jobs:
           grep -q 'drivers/kernelsu/' drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           sed -i --follow-symlinks '1i ccflags-y += -std=gnu11 -Wno-error' drivers/kernelsu/Makefile
 
+          mkdir -p include/linux/sched
+          for h in signal.h task.h mm.h user.h coredump.h jobctl.h debug.h; do
+            [ -f "include/linux/sched/$h" ] || echo '#include <linux/sched.h>' > "include/linux/sched/$h"
+          done
+          [ -f "include/linux/pgtable.h" ] || echo '#include <asm/pgtable.h>' > "include/linux/pgtable.h"
+          [ -f "include/linux/compiler_types.h" ] || echo '#include <linux/compiler.h>' > "include/linux/compiler_types.h"
+
+          if ! grep -q "int path_umount" fs/namespace.c; then
+            printf '%s\n' \
+              '' \
+              'static int can_umount(const struct path *path, int flags)' \
+              '{' \
+              '    struct mount *mnt = real_mount(path->mnt);' \
+              '    if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))' \
+              '        return -EINVAL;' \
+              '    if (!may_mount())' \
+              '        return -EPERM;' \
+              '    if (path->dentry != path->mnt->mnt_root)' \
+              '        return -EINVAL;' \
+              '    if (!check_mnt(mnt))' \
+              '        return -EINVAL;' \
+              '    if (mnt->mnt.mnt_flags & MNT_LOCKED)' \
+              '        return -EINVAL;' \
+              '    if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))' \
+              '        return -EPERM;' \
+              '    return 0;' \
+              '}' \
+              '' \
+              'int path_umount(struct path *path, int flags)' \
+              '{' \
+              '    struct mount *mnt = real_mount(path->mnt);' \
+              '    int ret = can_umount(path, flags);' \
+              '    if (!ret)' \
+              '        ret = do_umount(mnt, flags);' \
+              '    dput(path->dentry);' \
+              '    mntput_no_expire(mnt);' \
+              '    return ret;' \
+              '}' \
+              >> fs/namespace.c
+          fi
+
       - name: Apply NetHunter HID & Wi-Fi Injection Patches
         working-directory: kernel
         run: |
@@ -90,7 +131,7 @@ jobs:
           grep -q "CONFIG_KSU=y" out/.config || (echo "ERROR: CONFIG_KSU=y belum aktif!" && exit 1)
 
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- prepare
-          if ! make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-error=strict-prototypes -Wno-error=implicit-function-declaration" drivers/kernelsu/ 2>&1 | tee ksu.log; then
+          if ! make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-error=strict-prototypes -Wno-error=implicit-function-declaration" init/ drivers/kernelsu/ 2>&1 | tee ksu.log; then
             echo "=== ERROR DRIVER KSU ==="
             grep -iE "error:" ksu.log | tail -n 25
             exit 1
