@@ -1,4 +1,4 @@
-name: Build Jawirprek ReSukiSU Nethunter XZ3
+name: Build Jawirprek KSU Nethunter XZ3
 
 on:
   workflow_dispatch:
@@ -24,66 +24,16 @@ jobs:
           cd ..
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
 
-      - name: Integrate ReSukiSU & Linux 4.9 Backports
+      - name: Integrate Modern KernelSU Fork (rsuntk Non-GKI 4.9)
         working-directory: kernel
         run: |
           export GIT_TERMINAL_PROMPT=0
           rm -rf KernelSU drivers/kernelsu
-          git clone https://github.com/ReSukiSU/ReSukiSU.git KernelSU
-          if ! grep -qi "kprobe" KernelSU/kernel/Kconfig; then
-            V3_TAG=$(git -C KernelSU tag -l | grep -E '^v3\.' | sort -V | tail -n 1)
-            [ -n "$V3_TAG" ] && git -C KernelSU checkout "$V3_TAG"
-          fi
+          git clone https://github.com/rsuntk/KernelSU.git KernelSU
           ln -sfn ../KernelSU/kernel drivers/kernelsu
-          [ -d KernelSU/.git ] || (echo "ERROR: Folder KernelSU/.git tidak ditemukan!" && exit 1)
-
-          echo "=== ISI KCONFIG RESUKISU ==="
-          cat drivers/kernelsu/Kconfig
-
-          grep -q 'kernelsu/Kconfig' drivers/Kconfig || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-          grep -q 'kernelsu' drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          grep -q 'drivers/kernelsu/' drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           sed -i --follow-symlinks '1i ccflags-y += -std=gnu11 -Wno-error' drivers/kernelsu/Makefile
-
-          mkdir -p include/linux/sched
-          for h in signal.h task.h mm.h user.h coredump.h jobctl.h debug.h; do
-            [ -f "include/linux/sched/$h" ] || echo '#include <linux/sched.h>' > "include/linux/sched/$h"
-          done
-          [ -f "include/linux/pgtable.h" ] || echo '#include <asm/pgtable.h>' > "include/linux/pgtable.h"
-          [ -f "include/linux/compiler_types.h" ] || echo '#include <linux/compiler.h>' > "include/linux/compiler_types.h"
-
-          if ! grep -q "int path_umount" fs/namespace.c; then
-            printf '%s\n' \
-              '' \
-              'static int can_umount(const struct path *path, int flags)' \
-              '{' \
-              '    struct mount *mnt = real_mount(path->mnt);' \
-              '    if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))' \
-              '        return -EINVAL;' \
-              '    if (!may_mount())' \
-              '        return -EPERM;' \
-              '    if (path->dentry != path->mnt->mnt_root)' \
-              '        return -EINVAL;' \
-              '    if (!check_mnt(mnt))' \
-              '        return -EINVAL;' \
-              '    if (mnt->mnt.mnt_flags & MNT_LOCKED)' \
-              '        return -EINVAL;' \
-              '    if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))' \
-              '        return -EPERM;' \
-              '    return 0;' \
-              '}' \
-              '' \
-              'int path_umount(struct path *path, int flags)' \
-              '{' \
-              '    struct mount *mnt = real_mount(path->mnt);' \
-              '    int ret = can_umount(path, flags);' \
-              '    if (!ret)' \
-              '        ret = do_umount(mnt, flags);' \
-              '    dput(path->dentry);' \
-              '    mntput_no_expire(mnt);' \
-              '    return ret;' \
-              '}' \
-              >> fs/namespace.c
-          fi
 
       - name: Apply NetHunter HID & Wi-Fi Injection Patches
         working-directory: kernel
@@ -111,18 +61,11 @@ jobs:
             'CONFIG_KPROBE_EVENTS=y' \
             'CONFIG_OVERLAY_FS=y' \
             'CONFIG_KSU=y' \
+            'CONFIG_KSU_KPROBES_HOOK=y' \
             'CONFIG_NFC=y' \
             'CONFIG_NFC_NCI=y' \
             'CONFIG_NFC_NQ=y' \
             >> arch/arm64/configs/tama_akatsuki_defconfig
-
-          KPROBE_CFG=$(grep -hiE "^[[:space:]]*config[[:space:]]+KSU_.*KPROBE" drivers/kernelsu/Kconfig | awk '{print $2}' | head -n 1)
-          if [ -n "$KPROBE_CFG" ]; then
-            sed -i --follow-symlinks "s/default[[:space:]]\+KSU_.*TP.*/default $KPROBE_CFG/g" drivers/kernelsu/Kconfig
-            echo "CONFIG_${KPROBE_CFG}=y" >> arch/arm64/configs/tama_akatsuki_defconfig
-          fi
-          grep -hiE "^[[:space:]]*config[[:space:]]+KSU_.*(TP|TRACEPOINT)" drivers/kernelsu/Kconfig | awk '{print "# CONFIG_"$2" is not set"}' >> arch/arm64/configs/tama_akatsuki_defconfig
-
           if find drivers/nfc -iname "*cxd224x*" | grep -q .; then
             echo "CONFIG_NFC_CXD224X=y" >> arch/arm64/configs/tama_akatsuki_defconfig
           fi
@@ -133,22 +76,22 @@ jobs:
             -e 's/-Werror=/-Wno-error=/g' \
             -e 's/-Werror\([[:space:]"'\'']\|$\)/\1/g' {} +
 
-      - name: Compile Kernel (With Fast KSU Pre-Check)
+      - name: Compile Kernel
         working-directory: kernel
         run: |
           set -o pipefail
           export ARCH=arm64
           export SUBARCH=arm64
           export KBUILD_BUILD_USER="Opreker-Gapunya-Alat"
-          export KBUILD_BUILD_HOST="Inc.ReSukiSU+NetHunter"
+          export KBUILD_BUILD_HOST="Inc.KSU+NetHunter"
           export PATH="$PWD/../clang/bin:$PATH"
           make O=out ARCH=arm64 tama_akatsuki_defconfig
-          grep -E "CONFIG_KSU|CONFIG_KALLSYMS|CONFIG_KPROBES|CONFIG_KRETPROBES" out/.config
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_KRETPROBES|CONFIG_LOCALVERSION" out/.config
           grep -q "CONFIG_KSU=y" out/.config || (echo "ERROR: CONFIG_KSU=y belum aktif!" && exit 1)
 
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- prepare
           if ! make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-error=strict-prototypes -Wno-error=implicit-function-declaration" drivers/kernelsu/ 2>&1 | tee ksu.log; then
-            echo "=== ERROR DRIVER RESUKISU ==="
+            echo "=== ERROR DRIVER KSU ==="
             grep -iE "error:" ksu.log | tail -n 25
             exit 1
           fi
@@ -165,12 +108,12 @@ jobs:
           sed -i 's#^do.devicecheck=.*#do.devicecheck=0#Ig' anykernel/anykernel.sh
           sed -i 's#^block=.*#block=auto;#Ig' anykernel/anykernel.sh
           sed -i 's#^is_slot_device=.*#is_slot_device=auto;#Ig' anykernel/anykernel.sh
-          sed -i 's#^kernel.string=.*#kernel.string=Jawirprek Kernel (Opreker Gapunya Alat | Inc. ReSukiSU + NetHunter) - TG: @Jawirprek#Ig' anykernel/anykernel.sh
+          sed -i 's#^kernel.string=.*#kernel.string=Jawirprek Kernel (Opreker Gapunya Alat | Inc. KSU + NetHunter) - TG: @Jawirprek#Ig' anykernel/anykernel.sh
           cd anykernel
-          zip -r9 ../Jawirprek-SOV39-ReSukiSU+NetHunter-$(date +%Y%m%d).zip * -x .git README.md *placeholder
+          zip -r9 ../Jawirprek-SOV39-KSU+NetHunter-$(date +%Y%m%d).zip * -x .git README.md *placeholder
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Jawirprek-SOV39-ReSukiSU+NetHunter
-          path: Jawirprek-SOV39-ReSukiSU+NetHunter-*.zip
+          name: Jawirprek-SOV39-KSU+NetHunter
+          path: Jawirprek-SOV39-KSU+NetHunter-*.zip
