@@ -24,61 +24,34 @@ jobs:
           cd ..
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
 
-      - name: Fetch KowSU APK & Extract Exact Certificate Hash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract KowSU Certificate Signature
         run: |
+          git clone --depth=1 https://github.com/KOWX712/KernelSU.git kowsu-ref
           python3 - << 'EOF'
-          import json, os, struct, hashlib, urllib.request
+          import glob, os, re
 
-          req = urllib.request.Request(
-              "https://api.github.com/repos/KOWX712/KernelSU/releases?per_page=5",
-              headers={"Authorization": f"Bearer {os.environ['GH_TOKEN']}", "User-Agent": "Mozilla/5.0"}
-          )
-          releases = json.loads(urllib.request.urlopen(req).read().decode())
-          apk_url = None
-          for rel in releases:
-              for asset in rel.get("assets", []):
-                  if asset["name"].endswith(".apk"):
-                      apk_url = asset["browser_download_url"]
-                      break
-              if apk_url:
-                  break
+          size_val = None
+          hash_val = None
+          for path in glob.glob("kowsu-ref/kernel/**/*", recursive=True):
+              if os.path.isfile(path):
+                  txt = open(path, errors="ignore").read()
+                  if not size_val:
+                      m = re.search(r'(?:KSU_)?EXPECTED_SIZE\s*[:?]=\s*(0x[0-9a-fA-F]+|\d+)', txt)
+                      if m:
+                          size_val = m.group(1)
+                  if not hash_val:
+                      m = re.search(r'(?:KSU_)?EXPECTED_HASH\s*[:?]=\s*([0-9a-fA-F]{64})', txt)
+                      if m:
+                          hash_val = m.group(1)
 
-          assert apk_url, "APK KowSU tidak ditemukan di GitHub Releases"
-          print("Downloading:", apk_url)
-          urllib.request.urlretrieve(apk_url, "KowSU-Manager.apk")
-
-          data = open("KowSU-Manager.apk", "rb").read()
-          idx = data.rfind(b"APK Sig Block 42")
-          assert idx != -1, "APK Sig Block 42 tidak ditemukan"
-          block_size = struct.unpack("<Q", data[idx-8:idx])[0]
-          block = data[idx+16-block_size : idx-8]
-
-          pos = 0
-          cert = None
-          while pos < len(block):
-              pair_len, pair_id = struct.unpack("<QI", block[pos:pos+12])
-              val = block[pos+12 : pos+8+pair_len]
-              if pair_id == 0x7109871a:
-                  signed_data_len = struct.unpack("<I", val[8:12])[0]
-                  signed_data = val[12 : 12+signed_data_len]
-                  digests_len = struct.unpack("<I", signed_data[0:4])[0]
-                  certs_off = 4 + digests_len
-                  first_cert_len = struct.unpack("<I", signed_data[certs_off+4:certs_off+8])[0]
-                  cert = signed_data[certs_off+8 : certs_off+8+first_cert_len]
-                  break
-              pos += 8 + pair_len
-
-          assert cert is not None, "Sertifikat v2 tidak ditemukan"
-          cert_size = f"0x{len(cert):04x}"
-          cert_hash = hashlib.sha256(cert).hexdigest()
-          print(f"KOWSU_SIZE={cert_size}")
-          print(f"KOWSU_HASH={cert_hash}")
+          assert size_val and hash_val, "Signature KowSU tidak ditemukan di kowsu-ref/kernel"
+          print(f"KOWSU_SIZE={size_val}")
+          print(f"KOWSU_HASH={hash_val}")
           with open(os.environ["GITHUB_ENV"], "a") as f:
-              f.write(f"KOWSU_SIZE={cert_size}\n")
-              f.write(f"KOWSU_HASH={cert_hash}\n")
+              f.write(f"KOWSU_SIZE={size_val}\n")
+              f.write(f"KOWSU_HASH={hash_val}\n")
           EOF
+          rm -rf kowsu-ref
 
       - name: Integrate KernelSU (rsuntk Non-GKI 4.9 + KowSU Signature)
         working-directory: kernel
@@ -151,12 +124,14 @@ jobs:
           done
           rm -rf nh-patches
 
-      - name: Merge Defconfig, NFC KDDI (CXD224x) & Kernel Identity
+      - name: Merge Defconfig, NFC SOV39 (CXD224x), SDM845 Cooling & Kernel Identity
         working-directory: kernel
         run: |
           cat ../nethunter.fragment >> arch/arm64/configs/tama_akatsuki_defconfig
           sed -i '/CONFIG_LOCALVERSION/d' arch/arm64/configs/tama_akatsuki_defconfig
           sed -i '/CONFIG_KALLSYMS/d' arch/arm64/configs/tama_akatsuki_defconfig
+          sed -i '/CONFIG_SCHED_DEBUG/d' arch/arm64/configs/tama_akatsuki_defconfig
+          sed -i '/CONFIG_DEBUG_PREEMPT/d' arch/arm64/configs/tama_akatsuki_defconfig
           printf '%s\n' \
             'CONFIG_LOCALVERSION="-Jawirprek-SOV39@Jawirprek"' \
             '# CONFIG_LOCALVERSION_AUTO is not set' \
@@ -171,15 +146,54 @@ jobs:
             'CONFIG_NFC=y' \
             'CONFIG_NFC_NCI=y' \
             'CONFIG_NFC_NQ=y' \
+            'CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y' \
+            'CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y' \
+            'CONFIG_CPU_FREQ_GOV_POWERSAVE=y' \
+            'CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y' \
+            'CONFIG_TCP_CONG_ADVANCED=y' \
+            'CONFIG_TCP_CONG_BBR=y' \
+            'CONFIG_DEFAULT_BBR=y' \
+            'CONFIG_CRYPTO_LZ4=y' \
+            'CONFIG_ZRAM=y' \
+            '# CONFIG_SCHED_DEBUG is not set' \
+            '# CONFIG_DEBUG_PREEMPT is not set' \
             >> arch/arm64/configs/tama_akatsuki_defconfig
 
-          for cfg in $(grep -rnE '^[[:space:]]*config[[:space:]]+(NFC_CXD224X|SONY_FELICA|NFC_SONY|SNFC)' drivers/ | sed -E 's/.*config[[:space:]]+([A-Z0-9_]+).*/CONFIG_\1=y/' | sort -u); do
-            echo "Enabling NFC SOV39 config: $cfg"
-            echo "$cfg" >> arch/arm64/configs/tama_akatsuki_defconfig
-          done
+          python3 - << 'EOF'
+          import glob, re
 
-          echo "=== CEK KONFIGURASI NFC DI DEVICE TREE TAMA ==="
-          grep -rnE "cxd224x|nq@28" arch/arm64/boot/dts/qcom/ || true
+          # 1. Aktifkan semua Kconfig bool/tristate untuk NFC Sony CXD224x / FeliCa
+          nfc_cfgs = set()
+          for kc in glob.glob("drivers/**/Kconfig*", recursive=True):
+              lines = open(kc, errors="ignore").readlines()
+              for i, line in enumerate(lines):
+                  m = re.match(r'^\s*config\s+([A-Z0-9_]*(?:CXD224X|FELICA|NFC_SONY|SNFC)[A-Z0-9_]*)\s*$', line)
+                  if m:
+                      block = "".join(lines[i+1:i+6])
+                      if re.search(r'^\s*(bool|tristate)\b', block, re.M):
+                          nfc_cfgs.add(f"CONFIG_{m.group(1)}=y")
+
+          with open("arch/arm64/configs/tama_akatsuki_defconfig", "a") as f:
+              for c in sorted(nfc_cfgs):
+                  print("Enabling NFC SOV39 config:", c)
+                  f.write(c + "\n")
+
+          # 2. Aktifkan node cxd224x di Device Tree tama/akatsuki jika statusnya disabled
+          for dts in glob.glob("arch/arm64/boot/dts/**/*tama*", recursive=True) + glob.glob("arch/arm64/boot/dts/**/*akatsuki*", recursive=True):
+              if dts.endswith((".dts", ".dtsi")):
+                  content = open(dts, errors="ignore").read()
+                  if "cxd224x" in content:
+                      print("Found cxd224x in DTS:", dts)
+                      patched = re.sub(
+                          r'(cxd224x[^{]*\{[^}]*?status\s*=\s*")disabled(")',
+                          r'\1okay\2',
+                          content,
+                          flags=re.S
+                      )
+                      if patched != content:
+                          open(dts, "w").write(patched)
+                          print("Patched cxd224x status -> okay in:", dts)
+          EOF
 
           sed -i '/CONFIG_ATH9K_HTC/d' arch/arm64/configs/tama_akatsuki_defconfig
           echo "# CONFIG_ATH9K_HTC is not set" >> arch/arm64/configs/tama_akatsuki_defconfig
@@ -198,7 +212,7 @@ jobs:
           export KBUILD_BUILD_HOST="Inc.KSU+NetHunter"
           export PATH="$PWD/../clang/bin:$PATH"
           make O=out ARCH=arm64 tama_akatsuki_defconfig
-          grep -E "CONFIG_KSU|CONFIG_NFC" out/.config
+          grep -E "CONFIG_KSU|CONFIG_NFC|CONFIG_WQ_POWER_EFFICIENT|CONFIG_TCP_CONG_BBR" out/.config
           grep -q "CONFIG_KSU=y" out/.config || (echo "ERROR: CONFIG_KSU=y belum aktif!" && exit 1)
 
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- prepare
@@ -229,6 +243,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Jawirprek-SOV39-KSU+NetHunter
-          path: |
-            Jawirprek-SOV39-KSU+NetHunter-*.zip
-            KowSU-Manager.apk
+          path: Jawirprek-SOV39-KSU+NetHunter-*.zip
