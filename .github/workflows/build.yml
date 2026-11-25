@@ -29,13 +29,17 @@ jobs:
         run: |
           export GIT_TERMINAL_PROMPT=0
           rm -rf KernelSU drivers/kernelsu
-          if git clone -b nongki https://github.com/ReSukiSU/ReSukiSU.git KernelSU; then
-            echo "Using ReSukiSU (nongki)"
-          else
-            git clone https://github.com/ReSukiSU/ReSukiSU.git KernelSU
+          git clone https://github.com/ReSukiSU/ReSukiSU.git KernelSU
+          if ! grep -qi "kprobe" KernelSU/kernel/Kconfig; then
+            V3_TAG=$(git -C KernelSU tag -l | grep -E '^v3\.' | sort -V | tail -n 1)
+            [ -n "$V3_TAG" ] && git -C KernelSU checkout "$V3_TAG"
           fi
           ln -sfn ../KernelSU/kernel drivers/kernelsu
           [ -d KernelSU/.git ] || (echo "ERROR: Folder KernelSU/.git tidak ditemukan!" && exit 1)
+
+          echo "=== ISI KCONFIG RESUKISU ==="
+          cat drivers/kernelsu/Kconfig
+
           grep -q 'kernelsu/Kconfig' drivers/Kconfig || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           grep -q 'kernelsu' drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           sed -i --follow-symlinks '1i ccflags-y += -std=gnu11 -Wno-error' drivers/kernelsu/Makefile
@@ -85,8 +89,10 @@ jobs:
         working-directory: kernel
         run: |
           git clone --depth=1 https://gitlab.com/kalilinux/nethunter/build-scripts/kali-nethunter-kernel.git nh-patches
-          patch -p1 < nh-patches/patches/4.9/add-wifi-injection-4.9.patch || true
-          patch -p1 < nh-patches/patches/4.9/fix-hid-gadget-4.9.patch || true
+          for p in $(find nh-patches/patches -type f \( -path "*4.09*" -o -path "*4.9*" \) \( -name "*wifi-injection*" -o -name "*hid-gadget*" \)); do
+            echo "Applying $p"
+            patch -p1 < "$p" || true
+          done
           rm -rf nh-patches
 
       - name: Merge Defconfig, NFC KDDI & Kernel Identity
@@ -94,9 +100,12 @@ jobs:
         run: |
           cat ../nethunter.fragment >> arch/arm64/configs/tama_akatsuki_defconfig
           sed -i '/CONFIG_LOCALVERSION/d' arch/arm64/configs/tama_akatsuki_defconfig
+          sed -i '/CONFIG_KALLSYMS/d' arch/arm64/configs/tama_akatsuki_defconfig
           printf '%s\n' \
             'CONFIG_LOCALVERSION="-Jawirprek-SOV39@Jawirprek"' \
             '# CONFIG_LOCALVERSION_AUTO is not set' \
+            'CONFIG_KALLSYMS=y' \
+            'CONFIG_KALLSYMS_ALL=y' \
             'CONFIG_KPROBES=y' \
             'CONFIG_KRETPROBES=y' \
             'CONFIG_KPROBE_EVENTS=y' \
@@ -106,8 +115,14 @@ jobs:
             'CONFIG_NFC_NCI=y' \
             'CONFIG_NFC_NQ=y' \
             >> arch/arm64/configs/tama_akatsuki_defconfig
-          grep -hE "^[[:space:]]*config[[:space:]]+KSU_.*KPROBE" drivers/kernelsu/Kconfig | awk '{print "CONFIG_"$2"=y"}' >> arch/arm64/configs/tama_akatsuki_defconfig
-          grep -hE "^[[:space:]]*config[[:space:]]+KSU_.*(TP|TRACEPOINT)" drivers/kernelsu/Kconfig | awk '{print "# CONFIG_"$2" is not set"}' >> arch/arm64/configs/tama_akatsuki_defconfig
+
+          KPROBE_CFG=$(grep -hiE "^[[:space:]]*config[[:space:]]+KSU_.*KPROBE" drivers/kernelsu/Kconfig | awk '{print $2}' | head -n 1)
+          if [ -n "$KPROBE_CFG" ]; then
+            sed -i --follow-symlinks "s/default[[:space:]]\+KSU_.*TP.*/default $KPROBE_CFG/g" drivers/kernelsu/Kconfig
+            echo "CONFIG_${KPROBE_CFG}=y" >> arch/arm64/configs/tama_akatsuki_defconfig
+          fi
+          grep -hiE "^[[:space:]]*config[[:space:]]+KSU_.*(TP|TRACEPOINT)" drivers/kernelsu/Kconfig | awk '{print "# CONFIG_"$2" is not set"}' >> arch/arm64/configs/tama_akatsuki_defconfig
+
           if find drivers/nfc -iname "*cxd224x*" | grep -q .; then
             echo "CONFIG_NFC_CXD224X=y" >> arch/arm64/configs/tama_akatsuki_defconfig
           fi
@@ -128,7 +143,7 @@ jobs:
           export KBUILD_BUILD_HOST="Inc.ReSukiSU+NetHunter"
           export PATH="$PWD/../clang/bin:$PATH"
           make O=out ARCH=arm64 tama_akatsuki_defconfig
-          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_KRETPROBES" out/.config
+          grep -E "CONFIG_KSU|CONFIG_KALLSYMS|CONFIG_KPROBES|CONFIG_KRETPROBES" out/.config
           grep -q "CONFIG_KSU=y" out/.config || (echo "ERROR: CONFIG_KSU=y belum aktif!" && exit 1)
 
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- prepare
