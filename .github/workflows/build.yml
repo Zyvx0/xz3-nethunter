@@ -27,7 +27,7 @@ jobs:
       - name: Integrate KernelSU Next (Latest)
         working-directory: kernel
         run: |
-          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -
+          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/main/kernel/setup.sh" | bash -
 
       - name: Apply NetHunter HID & Wi-Fi Injection Patches
         working-directory: kernel
