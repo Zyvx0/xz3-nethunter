@@ -1,4 +1,4 @@
-name: Build Jawirprek+Nethunter XZ3
+name: Build Jawirprek Nethunter XZ3
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 device-tree-compiler wget
 
-      - name: Clone Kernel Source & Toolchain
+      - name: Clone Kernel Source (4.9.337) & Toolchain
         run: |
           git clone --depth=1 -b lineage-20 https://github.com/LineageOS/android_kernel_sony_sdm845.git kernel
           mkdir -p clang && cd clang
@@ -24,18 +24,13 @@ jobs:
           cd ..
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
 
-      - name: Integrate KernelSU Next (Latest)
+      - name: Integrate KernelSU Next (4.9 Non-GKI)
         working-directory: kernel
         run: |
-          git clone --depth=1 https://github.com/rifsxd/KernelSU-Next.git ksun-repo
-          SETUP_SCRIPT=$(find ksun-repo -maxdepth 3 -name "setup.sh" | head -n 1)
-          if [ -n "$SETUP_SCRIPT" ]; then
-            bash "$SETUP_SCRIPT"
-          else
-            rm -rf ksun-repo
-            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
-          fi
-          rm -rf ksun-repo
+          git clone --depth=1 -b legacy https://github.com/rifsxd/KernelSU-Next.git KernelSU-Next || git clone --depth=1 https://github.com/rifsxd/KernelSU-Next.git KernelSU-Next
+          ln -sfn ../KernelSU-Next/kernel drivers/kernelsu
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          grep -q 'drivers/kernelsu/' drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
 
       - name: Apply NetHunter HID & Wi-Fi Injection Patches
         working-directory: kernel
@@ -45,10 +40,25 @@ jobs:
           patch -p1 < nh-patches/patches/4.9/fix-hid-gadget-4.9.patch || true
           rm -rf nh-patches
 
-      - name: Merge Defconfig & Fix Conflicts
+      - name: Merge Defconfig, NFC KDDI & Kernel Identity
         working-directory: kernel
         run: |
           cat ../nethunter.fragment >> arch/arm64/configs/tama_akatsuki_defconfig
+          sed -i '/CONFIG_LOCALVERSION/d' arch/arm64/configs/tama_akatsuki_defconfig
+          printf '%s\n' \
+            'CONFIG_LOCALVERSION="-Jawirprek-SOV39@Jawirprek"' \
+            '# CONFIG_LOCALVERSION_AUTO is not set' \
+            'CONFIG_KPROBES=y' \
+            'CONFIG_KPROBE_EVENTS=y' \
+            'CONFIG_OVERLAY_FS=y' \
+            'CONFIG_KSU=y' \
+            'CONFIG_KSU_KPROBES_HOOK=y' \
+            'CONFIG_NFC=y' \
+            'CONFIG_NFC_NCI=y' \
+            'CONFIG_NFC_CXD224X=y' \
+            'CONFIG_NFC_PN553=y' \
+            'CONFIG_NFC_NQ=y' \
+            >> arch/arm64/configs/tama_akatsuki_defconfig
           sed -i '/CONFIG_ATH9K_HTC/d' arch/arm64/configs/tama_akatsuki_defconfig
           echo "# CONFIG_ATH9K_HTC is not set" >> arch/arm64/configs/tama_akatsuki_defconfig
           find . \( -name "Makefile*" -o -name "Kbuild*" \) -type f -exec sed -i \
@@ -61,22 +71,26 @@ jobs:
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
+          export KBUILD_BUILD_USER="Opreker-Gapunya-Alat"
+          export KBUILD_BUILD_HOST="Inc.KSUN+NetHunter"
           export PATH="$PWD/../clang/bin:$PATH"
           make O=out ARCH=arm64 tama_akatsuki_defconfig
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_LOCALVERSION|CONFIG_NFC" out/.config
+          grep -q "CONFIG_KSU=y" out/.config || (echo "ERROR: CONFIG_KSU=y belum aktif!" && exit 1)
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-error=strict-prototypes -Wno-error=implicit-function-declaration" Image.gz-dtb
 
       - name: Package AnyKernel3 Zip
         run: |
           cp kernel/out/arch/arm64/boot/Image.gz-dtb anykernel/
-          sed -i 's|^do.devicecheck=.*|do.devicecheck=0|g' anykernel/anykernel.sh
-          sed -i 's|^block=.*|block=auto;|g' anykernel/anykernel.sh
-          sed -i 's|^is_slot_device=.*|is_slot_device=auto;|g' anykernel/anykernel.sh
-          sed -i 's|^kernel.string=.*|kernel.string=Jawirprek+Nethunter (KSUNext) for XZ3|g' anykernel/anykernel.sh
+          sed -i 's#^do.devicecheck=.*#do.devicecheck=0#Ig' anykernel/anykernel.sh
+          sed -i 's#^block=.*#block=auto;#Ig' anykernel/anykernel.sh
+          sed -i 's#^is_slot_device=.*#is_slot_device=auto;#Ig' anykernel/anykernel.sh
+          sed -i 's#^kernel.string=.*#kernel.string=Jawirprek Kernel (Opreker Gapunya Alat | Inc. KSUN + NetHunter) - TG: @Jawirprek#Ig' anykernel/anykernel.sh
           cd anykernel
-          zip -r9 ../Jawirprek+Nethunter-XZ3-$(date +%Y%m%d).zip * -x .git README.md *placeholder
+          zip -r9 ../Jawirprek-SOV39-KSUN+NetHunter-$(date +%Y%m%d).zip * -x .git README.md *placeholder
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Jawirprek+Nethunter-XZ3
-          path: Jawirprek+Nethunter-XZ3-*.zip
+          name: Jawirprek-SOV39-KSUN+NetHunter
+          path: Jawirprek-SOV39-KSUN+NetHunter-*.zip
