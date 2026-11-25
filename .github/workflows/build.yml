@@ -1,4 +1,4 @@
-name: Build Jawirprek Nethunter XZ3
+name: Build Jawirprek ReSukiSU Nethunter XZ3
 
 on:
   workflow_dispatch:
@@ -24,18 +24,64 @@ jobs:
           cd ..
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
 
-      - name: Integrate KernelSU Next (4.9 Non-GKI)
+      - name: Integrate ReSukiSU & Linux 4.9 Backports
         working-directory: kernel
         run: |
-          if git clone --depth=1 -b legacy https://github.com/rifsxd/KernelSU-Next.git KernelSU-Next; then
-            echo "Cloned KernelSU-Next legacy branch"
+          export GIT_TERMINAL_PROMPT=0
+          if git clone --depth=1 -b nongki https://github.com/ReSukiSU/ReSukiSU.git KernelSU; then
+            echo "Using ReSukiSU (nongki)"
+          elif git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git KernelSU; then
+            echo "Using ReSukiSU (default)"
+          elif git clone --depth=1 -b nongki https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU; then
+            echo "Using SukiSU-Ultra (nongki)"
           else
-            git clone --depth=1 https://github.com/rifsxd/KernelSU-Next.git KernelSU-Next
+            git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU
           fi
-          ln -sfn ../KernelSU-Next/kernel drivers/kernelsu
-          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-          grep -q 'drivers/kernelsu/' drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
-          sed -i '1i ccflags-y += -std=gnu11 -Wno-error' drivers/kernelsu/Makefile
+          rm -rf drivers/kernelsu
+          cp -r KernelSU/kernel drivers/kernelsu
+          grep -q 'kernelsu/Kconfig' drivers/Kconfig || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          grep -q 'kernelsu' drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+          sed -i '1i ccflags-y += -std=gnu11 -Wno-error -DKSU_VERSION=12800' drivers/kernelsu/Makefile
+
+          mkdir -p include/linux/sched
+          for h in signal.h task.h mm.h user.h coredump.h jobctl.h; do
+            [ -f "include/linux/sched/$h" ] || echo '#include <linux/sched.h>' > "include/linux/sched/$h"
+          done
+          [ -f "include/linux/pgtable.h" ] || echo '#include <asm/pgtable.h>' > "include/linux/pgtable.h"
+
+          if ! grep -q "int path_umount" fs/namespace.c; then
+            printf '%s\n' \
+              '' \
+              'static int can_umount(const struct path *path, int flags)' \
+              '{' \
+              '    struct mount *mnt = real_mount(path->mnt);' \
+              '    if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))' \
+              '        return -EINVAL;' \
+              '    if (!may_mount())' \
+              '        return -EPERM;' \
+              '    if (path->dentry != path->mnt->mnt_root)' \
+              '        return -EINVAL;' \
+              '    if (!check_mnt(mnt))' \
+              '        return -EINVAL;' \
+              '    if (mnt->mnt.mnt_flags & MNT_LOCKED)' \
+              '        return -EINVAL;' \
+              '    if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))' \
+              '        return -EPERM;' \
+              '    return 0;' \
+              '}' \
+              '' \
+              'int path_umount(struct path *path, int flags)' \
+              '{' \
+              '    struct mount *mnt = real_mount(path->mnt);' \
+              '    int ret = can_umount(path, flags);' \
+              '    if (!ret)' \
+              '        ret = do_umount(mnt, flags);' \
+              '    dput(path->dentry);' \
+              '    mntput_no_expire(mnt);' \
+              '    return ret;' \
+              '}' \
+              >> fs/namespace.c
+          fi
 
       - name: Apply NetHunter HID & Wi-Fi Injection Patches
         working-directory: kernel
@@ -78,8 +124,9 @@ jobs:
           set -o pipefail
           export ARCH=arm64
           export SUBARCH=arm64
+          export KSU_GIT_VERSION=12800
           export KBUILD_BUILD_USER="Opreker-Gapunya-Alat"
-          export KBUILD_BUILD_HOST="Inc.KSUN+NetHunter"
+          export KBUILD_BUILD_HOST="Inc.ReSukiSU+NetHunter"
           export PATH="$PWD/../clang/bin:$PATH"
           make O=out ARCH=arm64 tama_akatsuki_defconfig
           grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_LOCALVERSION|CONFIG_NFC" out/.config
@@ -96,12 +143,12 @@ jobs:
           sed -i 's#^do.devicecheck=.*#do.devicecheck=0#Ig' anykernel/anykernel.sh
           sed -i 's#^block=.*#block=auto;#Ig' anykernel/anykernel.sh
           sed -i 's#^is_slot_device=.*#is_slot_device=auto;#Ig' anykernel/anykernel.sh
-          sed -i 's#^kernel.string=.*#kernel.string=Jawirprek Kernel (Opreker Gapunya Alat | Inc. KSUN + NetHunter) - TG: @Jawirprek#Ig' anykernel/anykernel.sh
+          sed -i 's#^kernel.string=.*#kernel.string=Jawirprek Kernel (Opreker Gapunya Alat | Inc. ReSukiSU + NetHunter) - TG: @Jawirprek#Ig' anykernel/anykernel.sh
           cd anykernel
-          zip -r9 ../Jawirprek-SOV39-KSUN+NetHunter-$(date +%Y%m%d).zip * -x .git README.md *placeholder
+          zip -r9 ../Jawirprek-SOV39-ReSukiSU+NetHunter-$(date +%Y%m%d).zip * -x .git README.md *placeholder
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Jawirprek-SOV39-KSUN+NetHunter
-          path: Jawirprek-SOV39-KSUN+NetHunter-*.zip
+          name: Jawirprek-SOV39-ReSukiSU+NetHunter
+          path: Jawirprek-SOV39-ReSukiSU+NetHunter-*.zip
