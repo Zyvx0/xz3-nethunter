@@ -13,12 +13,15 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 device-tree-compiler
+          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 device-tree-compiler wget
 
       - name: Clone Kernel Source & Toolchain
         run: |
           git clone --depth=1 -b lineage-20 https://github.com/LineageOS/android_kernel_sony_sdm845.git kernel
-          git clone --depth=1 https://gitlab.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r450784d.git clang
+          mkdir -p clang && cd clang
+          wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.0-20230129-release/Clang-16.0.0-20230129.tar.gz
+          tar -xf Clang-16.0.0-20230129.tar.gz && rm -f Clang-16.0.0-20230129.tar.gz
+          cd ..
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
 
       - name: Integrate KernelSU Next (Latest)
