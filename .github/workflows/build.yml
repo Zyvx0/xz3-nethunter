@@ -24,7 +24,7 @@ jobs:
           cd ..
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
 
-      - name: Integrate Modern KernelSU Fork (rsuntk Non-GKI 4.9)
+      - name: Integrate Modern KernelSU Fork (rsuntk Non-GKI 4.9 + KowSU Hash)
         working-directory: kernel
         run: |
           export GIT_TERMINAL_PROMPT=0
@@ -33,6 +33,9 @@ jobs:
           ln -sfn ../KernelSU/kernel drivers/kernelsu
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           grep -q 'drivers/kernelsu/' drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+
+          sed -i --follow-symlinks 's/KSU_EXPECTED_SIZE := .*/KSU_EXPECTED_SIZE := 0x033b/' drivers/kernelsu/Makefile drivers/kernelsu/Kbuild 2>/dev/null || true
+          sed -i --follow-symlinks 's/KSU_EXPECTED_HASH := .*/KSU_EXPECTED_HASH := c371061b19d8c7d7d6133c6a9bafe198fa944e50c1b31c9d8daa8d7f1fc2d2d6/' drivers/kernelsu/Makefile drivers/kernelsu/Kbuild 2>/dev/null || true
 
           for f in drivers/kernelsu/Makefile drivers/kernelsu/Kbuild; do
             if [ -f "$f" ]; then
