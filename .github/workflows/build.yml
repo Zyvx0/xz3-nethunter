@@ -45,12 +45,14 @@ jobs:
           patch -p1 < nh-patches/patches/4.9/fix-hid-gadget-4.9.patch || true
           rm -rf nh-patches
 
-      - name: Merge Defconfig & Strip Werror
+      - name: Merge Defconfig & Strip Werror Safely
         working-directory: kernel
         run: |
           cat ../nethunter.fragment >> arch/arm64/configs/tama_akatsuki_defconfig
-          sed -i 's/-Werror//g' Makefile
-          find drivers/staging/qcacld-3.0 -name "Kbuild" -exec sed -i 's/-Werror//g' {} +
+          find . \( -name "Makefile*" -o -name "Kbuild*" \) -type f -exec sed -i \
+            -e 's/-Werror-implicit-function-declaration/-Wno-error=implicit-function-declaration/g' \
+            -e 's/-Werror=/-Wno-error=/g' \
+            -e 's/-Werror\([[:space:]"'\'']\|$\)/\1/g' {} +
 
       - name: Compile Kernel
         working-directory: kernel
@@ -64,9 +66,10 @@ jobs:
       - name: Package AnyKernel3 Zip
         run: |
           cp kernel/out/arch/arm64/boot/Image.gz-dtb anykernel/
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel/anykernel.sh
-          sed -i 's/block=\/dev\/block\/platform\/omap\/omap_hsmmc.0\/by-name\/boot;/block=auto;/g' anykernel/anykernel.sh
-          sed -i 's/kernel.string=.*/kernel.string=Jawirprek+Nethunter (KSUNext) for XZ3/g' anykernel/anykernel.sh
+          sed -i 's|^do.devicecheck=.*|do.devicecheck=0|g' anykernel/anykernel.sh
+          sed -i 's|^block=.*|block=auto;|g' anykernel/anykernel.sh
+          sed -i 's|^is_slot_device=.*|is_slot_device=auto;|g' anykernel/anykernel.sh
+          sed -i 's|^kernel.string=.*|kernel.string=Jawirprek+Nethunter (KSUNext) for XZ3|g' anykernel/anykernel.sh
           cd anykernel
           zip -r9 ../Jawirprek+Nethunter-XZ3-$(date +%Y%m%d).zip * -x .git README.md *placeholder
 
