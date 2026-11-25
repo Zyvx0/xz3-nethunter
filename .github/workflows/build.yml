@@ -98,14 +98,16 @@ jobs:
             'CONFIG_LOCALVERSION="-Jawirprek-SOV39@Jawirprek"' \
             '# CONFIG_LOCALVERSION_AUTO is not set' \
             'CONFIG_KPROBES=y' \
+            'CONFIG_KRETPROBES=y' \
             'CONFIG_KPROBE_EVENTS=y' \
             'CONFIG_OVERLAY_FS=y' \
             'CONFIG_KSU=y' \
-            'CONFIG_KSU_KPROBES_HOOK=y' \
             'CONFIG_NFC=y' \
             'CONFIG_NFC_NCI=y' \
             'CONFIG_NFC_NQ=y' \
             >> arch/arm64/configs/tama_akatsuki_defconfig
+          grep -hE "^[[:space:]]*config[[:space:]]+KSU_.*KPROBE" drivers/kernelsu/Kconfig | awk '{print "CONFIG_"$2"=y"}' >> arch/arm64/configs/tama_akatsuki_defconfig
+          grep -hE "^[[:space:]]*config[[:space:]]+KSU_.*(TP|TRACEPOINT)" drivers/kernelsu/Kconfig | awk '{print "# CONFIG_"$2" is not set"}' >> arch/arm64/configs/tama_akatsuki_defconfig
           if find drivers/nfc -iname "*cxd224x*" | grep -q .; then
             echo "CONFIG_NFC_CXD224X=y" >> arch/arm64/configs/tama_akatsuki_defconfig
           fi
@@ -126,6 +128,7 @@ jobs:
           export KBUILD_BUILD_HOST="Inc.ReSukiSU+NetHunter"
           export PATH="$PWD/../clang/bin:$PATH"
           make O=out ARCH=arm64 tama_akatsuki_defconfig
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_KRETPROBES" out/.config
           grep -q "CONFIG_KSU=y" out/.config || (echo "ERROR: CONFIG_KSU=y belum aktif!" && exit 1)
 
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- prepare
