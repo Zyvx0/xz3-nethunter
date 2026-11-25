@@ -1,4 +1,4 @@
-name: Build Jawirprek Kernel
+name: Build Jawirprek Kernel (LOS 22)
 
 on:
   workflow_dispatch:
@@ -69,7 +69,7 @@ jobs:
 
           for f in drivers/kernelsu/Makefile drivers/kernelsu/Kbuild; do
             if [ -f "$f" ]; then
-              printf '\nccflags-y += -O3 -std=gnu11 -Wno-everything -I$(objtree)/security/selinux -I$(srctree)/security/selinux/include\n' >> "$f"
+              printf '\nccflags-y += -std=gnu11 -Wno-everything -I$(objtree)/security/selinux -I$(srctree)/security/selinux/include\n' >> "$f"
             fi
           done
 
@@ -94,15 +94,13 @@ jobs:
           done
           rm -rf nh-patches
 
-      - name: Patch -O3, Auto-Active Gaming Cooling & Memory Cache
+      - name: Patch Auto-Active Gaming Cooling & Memory Cache (Safe -O2 Storage)
         working-directory: kernel
         run: |
-          sed -i 's/-O2/-O3/g' Makefile
-
           python3 - << 'EOF'
           import os, re
 
-          # 1. Auto-clamp CPU Gold Cluster max freq di 2.47 GHz (pangkas 2 bin voltase terpanas SDM845)
+          # 1. Auto-clamp CPU Gold Cluster max freq di 2.47 GHz
           cpufreq_c = "drivers/cpufreq/cpufreq.c"
           if os.path.isfile(cpufreq_c):
               txt = open(cpufreq_c, errors="ignore").read()
@@ -115,7 +113,7 @@ jobs:
                   open(cpufreq_c, "w").write(txt)
                   print("Patched native CPU Gold sweet-spot (2.47 GHz) in cpufreq.c")
 
-          # 2. Auto-cap GPU Adreno 630 max power level ke level 1 (596 MHz, hindari bin panas 710 MHz)
+          # 2. Auto-cap GPU Adreno 630 max power level ke level 1 (596 MHz)
           kgsl_c = "drivers/gpu/msm/kgsl_pwrctrl.c"
           if os.path.isfile(kgsl_c):
               txt = open(kgsl_c, errors="ignore").read()
@@ -164,11 +162,10 @@ jobs:
           echo "DEFCONFIG_NAME=$DEFCONFIG_NAME" >> "$GITHUB_ENV"
 
           python3 - << 'EOF'
-          import glob, os, re
+          import glob, os
 
           cfg_path = "arch/arm64/configs/vendor/sdm845-perf_defconfig"
           with open(cfg_path, "a") as out_f:
-              # Gabungkan fragment config Sony Tama & Akatsuki dari device tree aoitsme
               for dt_dir in ("../dt-tama", "../dt-akatsuki"):
                   if not os.path.isdir(dt_dir):
                       continue
@@ -179,7 +176,6 @@ jobs:
                       print("Merging aoitsme Sony config fragment:", f)
                       out_f.write("\n" + open(f, errors="ignore").read() + "\n")
 
-              # Pastikan simbol platform Sony Tama & Xperia XZ3 (akatsuki) aktif
               kconfig_blob = "\n".join(
                   open(kc, errors="ignore").read()
                   for kc in glob.glob("arch/arm64/**/Kconfig*", recursive=True) + glob.glob("drivers/**/Kconfig*", recursive=True)
@@ -241,7 +237,7 @@ jobs:
             -e 's/-Werror=/-Wno-error=/g' \
             -e 's/-Werror\([[:space:]"'\'']\|$\)/\1/g' {} +
 
-      - name: Compile Kernel (Clang 21 -O3 + LLD + Kryo 385 Tuning)
+      - name: Compile Kernel (Clang 21 + LLD + Kryo 385 Tuning)
         working-directory: kernel
         run: |
           set -o pipefail
@@ -267,12 +263,10 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu-
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           )
-          OPT_CFLAGS="-O3 -Wno-everything -mtune=cortex-a75"
+          OPT_CFLAGS="-Wno-everything -mtune=cortex-a75"
 
           make O=out ARCH=arm64 "$DEFCONFIG_NAME"
           grep -q "CONFIG_KSU=y" out/.config || (echo "ERROR: CONFIG_KSU=y belum aktif!" && exit 1)
-          echo "=== KONFIGURASI SONY AKATSUKI & NFC ==="
-          grep -E "SONY|AKATSUKI|TAMA|CONFIG_NFC|CXD224|FELICA" out/.config || true
 
           make "${MAKE_ARGS[@]}" prepare
           make "${MAKE_ARGS[@]}" KCFLAGS="$OPT_CFLAGS" init/ security/selinux/
@@ -297,12 +291,12 @@ jobs:
           sed -i 's#^is_slot_device=.*#is_slot_device=auto;#Ig' anykernel/anykernel.sh
           sed -i 's#^kernel.string=.*#kernel.string=Jawirprek Kernel | Xperia XZ3 (akatsuki) | KSU + NetHunter#Ig' anykernel/anykernel.sh
           cd anykernel
-          zip -r9 ../Jawirprek-Kernel-akatsuki-$(date +%Y%m%d).zip * -x .git README.md *placeholder
+          zip -r9 ../Jawirprek-Kernel-akatsuki-LOS22-$(date +%Y%m%d).zip * -x .git README.md *placeholder
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Jawirprek-Kernel-akatsuki
+          name: Jawirprek-Kernel-akatsuki-LOS22
           path: |
-            Jawirprek-Kernel-akatsuki-*.zip
+            Jawirprek-Kernel-akatsuki-LOS22-*.zip
             KernelSU_v0.9.5*.apk
