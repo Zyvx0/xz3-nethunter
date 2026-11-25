@@ -15,7 +15,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 device-tree-compiler wget
 
-      - name: Clone Kernel Source (4.9.337) & Toolchain
+      - name: Clone Kernel Source & Toolchain
         run: |
           git clone --depth=1 -b lineage-20 https://github.com/LineageOS/android_kernel_sony_sdm845.git kernel
           mkdir -p clang && cd clang
@@ -24,54 +24,21 @@ jobs:
           cd ..
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
 
-      - name: Extract KowSU Certificate Signature
-        run: |
-          git clone --depth=1 https://github.com/KOWX712/KernelSU.git kowsu-ref
-          python3 - << 'EOF'
-          import glob, os, re
-
-          size_val = None
-          hash_val = None
-          for path in glob.glob("kowsu-ref/kernel/**/*", recursive=True):
-              if os.path.isfile(path):
-                  txt = open(path, errors="ignore").read()
-                  if not size_val:
-                      m = re.search(r'(?:KSU_)?EXPECTED_SIZE\s*[:?]=\s*(0x[0-9a-fA-F]+|\d+)', txt)
-                      if m:
-                          size_val = m.group(1)
-                  if not hash_val:
-                      m = re.search(r'(?:KSU_)?EXPECTED_HASH\s*[:?]=\s*([0-9a-fA-F]{64})', txt)
-                      if m:
-                          hash_val = m.group(1)
-
-          assert size_val and hash_val, "Signature KowSU tidak ditemukan di kowsu-ref/kernel"
-          print(f"KOWSU_SIZE={size_val}")
-          print(f"KOWSU_HASH={hash_val}")
-          with open(os.environ["GITHUB_ENV"], "a") as f:
-              f.write(f"KOWSU_SIZE={size_val}\n")
-              f.write(f"KOWSU_HASH={hash_val}\n")
-          EOF
-          rm -rf kowsu-ref
-
-      - name: Integrate KernelSU (rsuntk Non-GKI 4.9 + KowSU Signature)
+      - name: Integrate Official Tian KernelSU (v0.9.5 Non-GKI 4.9)
         working-directory: kernel
         run: |
           export GIT_TERMINAL_PROMPT=0
           rm -rf KernelSU drivers/kernelsu
-          git clone https://github.com/rsuntk/KernelSU.git KernelSU
+          git clone --depth=1 -b v0.9.5 https://github.com/tiann/KernelSU.git KernelSU
           ln -sfn ../KernelSU/kernel drivers/kernelsu
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           grep -q 'drivers/kernelsu/' drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
 
           for f in drivers/kernelsu/Makefile drivers/kernelsu/Kbuild; do
             if [ -f "$f" ]; then
-              sed -i --follow-symlinks -E "s/(KSU_)?EXPECTED_SIZE[[:space:]]*[:?]=.*/\1EXPECTED_SIZE := ${KOWSU_SIZE}/g" "$f"
-              sed -i --follow-symlinks -E "s/(KSU_)?EXPECTED_HASH[[:space:]]*[:?]=.*/\1EXPECTED_HASH := ${KOWSU_HASH}/g" "$f"
               printf '\nccflags-y += -std=gnu11 -Wno-error -I$(objtree)/security/selinux -I$(srctree)/security/selinux/include\n' >> "$f"
             fi
           done
-          echo "=== VERIFIKASI SIGNATURE KOWSU DI KBUILD ==="
-          grep -rnE "EXPECTED_(SIZE|HASH)" drivers/kernelsu/
 
           mkdir -p include/linux/sched
           for h in signal.h task.h mm.h user.h coredump.h jobctl.h debug.h; do
@@ -80,39 +47,9 @@ jobs:
           [ -f "include/linux/pgtable.h" ] || echo '#include <asm/pgtable.h>' > "include/linux/pgtable.h"
           [ -f "include/linux/compiler_types.h" ] || echo '#include <linux/compiler.h>' > "include/linux/compiler_types.h"
 
-          if ! grep -q "int path_umount" fs/namespace.c; then
-            printf '%s\n' \
-              '' \
-              'static int can_umount(const struct path *path, int flags)' \
-              '{' \
-              '    struct mount *mnt = real_mount(path->mnt);' \
-              '    if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))' \
-              '        return -EINVAL;' \
-              '    if (!may_mount())' \
-              '        return -EPERM;' \
-              '    if (path->dentry != path->mnt->mnt_root)' \
-              '        return -EINVAL;' \
-              '    if (!check_mnt(mnt))' \
-              '        return -EINVAL;' \
-              '    if (mnt->mnt.mnt_flags & MNT_LOCKED)' \
-              '        return -EINVAL;' \
-              '    if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))' \
-              '        return -EPERM;' \
-              '    return 0;' \
-              '}' \
-              '' \
-              'int path_umount(struct path *path, int flags)' \
-              '{' \
-              '    struct mount *mnt = real_mount(path->mnt);' \
-              '    int ret = can_umount(path, flags);' \
-              '    if (!ret)' \
-              '        ret = do_umount(mnt, flags);' \
-              '    dput(path->dentry);' \
-              '    mntput_no_expire(mnt);' \
-              '    return ret;' \
-              '}' \
-              >> fs/namespace.c
-          fi
+          cd ..
+          wget -q https://github.com/tiann/KernelSU/releases/download/v0.9.5/KernelSU_v0.9.5_11872-release.apk || \
+          curl -sL https://api.github.com/repos/tiann/KernelSU/releases/tags/v0.9.5 | grep -oE 'https://[^"]+\.apk' | head -n 1 | xargs wget -q
 
       - name: Apply NetHunter HID & Wi-Fi Injection Patches
         working-directory: kernel
@@ -142,7 +79,6 @@ jobs:
             'CONFIG_KPROBE_EVENTS=y' \
             'CONFIG_OVERLAY_FS=y' \
             'CONFIG_KSU=y' \
-            'CONFIG_KSU_KPROBES_HOOK=y' \
             'CONFIG_NFC=y' \
             'CONFIG_NFC_NCI=y' \
             'CONFIG_NFC_NQ=y' \
@@ -162,7 +98,6 @@ jobs:
           python3 - << 'EOF'
           import glob, re
 
-          # 1. Aktifkan semua Kconfig bool/tristate untuk NFC Sony CXD224x / FeliCa
           nfc_cfgs = set()
           for kc in glob.glob("drivers/**/Kconfig*", recursive=True):
               lines = open(kc, errors="ignore").readlines()
@@ -178,12 +113,10 @@ jobs:
                   print("Enabling NFC SOV39 config:", c)
                   f.write(c + "\n")
 
-          # 2. Aktifkan node cxd224x di Device Tree tama/akatsuki jika statusnya disabled
           for dts in glob.glob("arch/arm64/boot/dts/**/*tama*", recursive=True) + glob.glob("arch/arm64/boot/dts/**/*akatsuki*", recursive=True):
               if dts.endswith((".dts", ".dtsi")):
                   content = open(dts, errors="ignore").read()
                   if "cxd224x" in content:
-                      print("Found cxd224x in DTS:", dts)
                       patched = re.sub(
                           r'(cxd224x[^{]*\{[^}]*?status\s*=\s*")disabled(")',
                           r'\1okay\2',
@@ -212,7 +145,6 @@ jobs:
           export KBUILD_BUILD_HOST="Inc.KSU+NetHunter"
           export PATH="$PWD/../clang/bin:$PATH"
           make O=out ARCH=arm64 tama_akatsuki_defconfig
-          grep -E "CONFIG_KSU|CONFIG_NFC|CONFIG_WQ_POWER_EFFICIENT|CONFIG_TCP_CONG_BBR" out/.config
           grep -q "CONFIG_KSU=y" out/.config || (echo "ERROR: CONFIG_KSU=y belum aktif!" && exit 1)
 
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- prepare
@@ -243,4 +175,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Jawirprek-SOV39-KSU+NetHunter
-          path: Jawirprek-SOV39-KSU+NetHunter-*.zip
+          path: |
+            Jawirprek-SOV39-KSU+NetHunter-*.zip
+            KernelSU_v0.9.5*.apk
