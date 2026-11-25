@@ -1,4 +1,4 @@
-name: Build Jawirprek Kernel +O3
+name: Build Jawirprek Kernel
 
 on:
   workflow_dispatch:
@@ -15,11 +15,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 device-tree-compiler wget gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi
 
-      - name: Clone Kernel Source & ZyCromerZ Clang 21
+      - name: Clone aoitsme 4.9 Kernel Source & ZyCromerZ Clang 21
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git clone --depth=1 -b lineage-20 https://github.com/LineageOS/android_kernel_sony_sdm845.git kernel
+          git clone --depth=1 https://github.com/aoitsme/android_kernel_qcom_sdm845.git kernel
           mkdir -p clang
           python3 - << 'EOF'
           import json, os, urllib.request
@@ -92,15 +92,15 @@ jobs:
           done
           rm -rf nh-patches
 
-      - name: Patch -O3, Auto-Active Gaming Cooling, Memory Cache & Native DT2W
+      - name: Patch -O3, Auto-Active Gaming Cooling & Memory Cache
         working-directory: kernel
         run: |
           sed -i 's/-O2/-O3/g' Makefile
 
           python3 - << 'EOF'
-          import glob, os, re
+          import os, re
 
-          # 1. Auto-clamp CPU Gold Cluster max freq di 2.47 GHz
+          # 1. Auto-clamp CPU Gold Cluster max freq di 2.47 GHz (pangkas 2 bin voltase terpanas SDM845)
           cpufreq_c = "drivers/cpufreq/cpufreq.c"
           if os.path.isfile(cpufreq_c):
               txt = open(cpufreq_c, errors="ignore").read()
@@ -113,7 +113,7 @@ jobs:
                   open(cpufreq_c, "w").write(txt)
                   print("Patched native CPU Gold sweet-spot (2.47 GHz) in cpufreq.c")
 
-          # 2. Auto-cap GPU Adreno 630 max power level ke level 1 (596 MHz)
+          # 2. Auto-cap GPU Adreno 630 max power level ke level 1 (596 MHz, hindari bin panas 710 MHz)
           kgsl_c = "drivers/gpu/msm/kgsl_pwrctrl.c"
           if os.path.isfile(kgsl_c):
               txt = open(kgsl_c, errors="ignore").read()
@@ -151,31 +151,24 @@ jobs:
               if patched != txt:
                   open(dcache_c, "w").write(patched)
                   print("Patched default vfs_cache_pressure -> 50 in fs/dcache.c")
-
-          # 5. Auto-aktif Double Tap to Wake (aot_enable) langsung di driver touchscreen
-          for ts_file in glob.glob("drivers/input/touchscreen/**/*.c", recursive=True):
-              txt = open(ts_file, errors="ignore").read()
-              if "aot_enable" in txt and "Jawirprek DT2W" not in txt:
-                  patched = re.sub(
-                      r'(ts->aot_enable\s*=\s*)(?:0|false)(\s*;)',
-                      r'\g<1>1\2 /* Jawirprek DT2W */',
-                      txt
-                  )
-                  if patched != txt:
-                      open(ts_file, "w").write(patched)
-                      print("Patched native DT2W auto-enable in:", ts_file)
           EOF
 
-      - name: Merge Defconfig, Gaming Cooling, DT2W & NFC
+      - name: Merge Defconfig (Preserve aoitsme Native NFC + Add Gaming Cooling)
         working-directory: kernel
         run: |
-          cat ../nethunter.fragment >> arch/arm64/configs/tama_akatsuki_defconfig
-          for sym in LOCALVERSION KALLSYMS SCHED_DEBUG DEBUG_PREEMPT LTO THINLTO HZ DEFAULT_CFQ CPU_BOOST CPU_FREQ_GOV CRYPTO_LZ4 ZRAM CRYPTO_CRC32_ARM64 ARM64_CRYPTO INPUT_EVDEV NFC_NQ; do
-            sed -i "/CONFIG_${sym}/d" arch/arm64/configs/tama_akatsuki_defconfig
+          DEFCONFIG=$(find arch/arm64/configs -maxdepth 2 -name "*akatsuki*defconfig" | sed 's|^arch/arm64/configs/||' | head -n 1)
+          [ -n "$DEFCONFIG" ] || (echo "ERROR: defconfig akatsuki tidak ditemukan!" && exit 1)
+          echo "DEFCONFIG_NAME=$DEFCONFIG" >> "$GITHUB_ENV"
+          CFG_PATH="arch/arm64/configs/$DEFCONFIG"
+          echo "Using defconfig: $CFG_PATH"
+
+          cat ../nethunter.fragment >> "$CFG_PATH"
+          for sym in LOCALVERSION KALLSYMS SCHED_DEBUG DEBUG_PREEMPT LTO THINLTO HZ DEFAULT_CFQ CPU_BOOST CPU_FREQ_GOV CRYPTO_LZ4 ZRAM CRYPTO_CRC32_ARM64 ARM64_CRYPTO; do
+            sed -i "/CONFIG_${sym}/d" "$CFG_PATH"
           done
 
           printf '%s\n' \
-            'CONFIG_LOCALVERSION="-Jawirprek-Kernel+O3"' \
+            'CONFIG_LOCALVERSION="-Jawirprek"' \
             '# CONFIG_LOCALVERSION_AUTO is not set' \
             'CONFIG_KALLSYMS=y' \
             'CONFIG_KALLSYMS_ALL=y' \
@@ -207,77 +200,13 @@ jobs:
             'CONFIG_CRYPTO_SHA256_ARM64=y' \
             'CONFIG_CRYPTO_AES_ARM64_CE_BLK=y' \
             'CONFIG_CRYPTO_CRC32_ARM64=y' \
-            'CONFIG_INPUT_EVDEV=y' \
-            'CONFIG_NFC=y' \
-            'CONFIG_NFC_NCI=y' \
-            'CONFIG_NFC_NQ=y' \
             '# CONFIG_SCHED_DEBUG is not set' \
             '# CONFIG_DEBUG_PREEMPT is not set' \
             '# CONFIG_DEFAULT_CFQ is not set' \
-            >> arch/arm64/configs/tama_akatsuki_defconfig
+            >> "$CFG_PATH"
 
-          python3 - << 'EOF'
-          import glob, re
-
-          defcfg_txt = open("arch/arm64/configs/tama_akatsuki_defconfig", errors="ignore").read()
-          active_ts = re.findall(r'^CONFIG_(TOUCHSCREEN_[A-Z0-9_]+)=y', defcfg_txt, re.M)
-          ts_prefixes = set()
-          for ts in active_ts:
-              parts = ts.split("_")
-              if len(parts) >= 2:
-                  ts_prefixes.add("_".join(parts[:2]))
-              if len(parts) >= 3:
-                  ts_prefixes.add("_".join(parts[:3]))
-
-          dt2w_cfgs = set()
-          for kc in glob.glob("drivers/input/touchscreen/**/Kconfig*", recursive=True):
-              lines = open(kc, errors="ignore").readlines()
-              for i, line in enumerate(lines):
-                  m = re.match(r'^\s*config\s+([A-Z0-9_]+)\s*$', line)
-                  if m:
-                      sym = m.group(1)
-                      if any(sym.startswith(p) for p in ts_prefixes) and re.search(r'(WAKEUP|GESTURE|DOUBLE|TAP|DT2W|AOT)', sym):
-                          block = "".join(lines[i+1:i+6])
-                          if re.search(r'^\s*(bool|tristate)\b', block, re.M):
-                              dt2w_cfgs.add(f"CONFIG_{sym}=y")
-
-          with open("arch/arm64/configs/tama_akatsuki_defconfig", "a") as f:
-              for c in sorted(dt2w_cfgs):
-                  print("Enabling DT2W / Wakeup Gesture config:", c)
-                  f.write(c + "\n")
-
-          nfc_cfgs = set()
-          for kc in glob.glob("drivers/**/Kconfig*", recursive=True):
-              lines = open(kc, errors="ignore").readlines()
-              for i, line in enumerate(lines):
-                  m = re.match(r'^\s*config\s+([A-Z0-9_]*(?:CXD224X|FELICA|NFC_SONY|SNFC)[A-Z0-9_]*)\s*$', line)
-                  if m:
-                      block = "".join(lines[i+1:i+6])
-                      if re.search(r'^\s*(bool|tristate)\b', block, re.M):
-                          nfc_cfgs.add(f"CONFIG_{m.group(1)}=y")
-
-          with open("arch/arm64/configs/tama_akatsuki_defconfig", "a") as f:
-              for c in sorted(nfc_cfgs):
-                  print("Enabling NFC config:", c)
-                  f.write(c + "\n")
-
-          for dts in glob.glob("arch/arm64/boot/dts/**/*tama*", recursive=True) + glob.glob("arch/arm64/boot/dts/**/*akatsuki*", recursive=True):
-              if dts.endswith((".dts", ".dtsi")):
-                  content = open(dts, errors="ignore").read()
-                  if "cxd224x" in content:
-                      patched = re.sub(
-                          r'(cxd224x[^{]*\{[^}]*?status\s*=\s*")disabled(")',
-                          r'\1okay\2',
-                          content,
-                          flags=re.S
-                      )
-                      if patched != content:
-                          open(dts, "w").write(patched)
-                          print("Patched cxd224x status -> okay in:", dts)
-          EOF
-
-          sed -i '/CONFIG_ATH9K_HTC/d' arch/arm64/configs/tama_akatsuki_defconfig
-          echo "# CONFIG_ATH9K_HTC is not set" >> arch/arm64/configs/tama_akatsuki_defconfig
+          sed -i '/CONFIG_ATH9K_HTC/d' "$CFG_PATH"
+          echo "# CONFIG_ATH9K_HTC is not set" >> "$CFG_PATH"
           find . \( -name "Makefile*" -o -name "Kbuild*" \) -type f -exec sed -i \
             -e 's/-Werror-implicit-function-declaration/-Wno-error=implicit-function-declaration/g' \
             -e 's/-Werror=/-Wno-error=/g' \
@@ -289,15 +218,15 @@ jobs:
           set -o pipefail
           export ARCH=arm64
           export SUBARCH=arm64
-          export KBUILD_BUILD_USER="Opreker-Gapunya-Alat"
-          export KBUILD_BUILD_HOST="Inc.KSU+NetHunter"
+          export KBUILD_BUILD_USER="jawirprek"
+          export KBUILD_BUILD_HOST="akatsuki"
           export PATH="$PWD/../clang/bin:$PATH"
 
           MAKE_ARGS=(
             -j$(nproc --all)
             O=out
             ARCH=arm64
-            LOCALVERSION="-Jawirprek-Kernel+O3"
+            LOCALVERSION="-Jawirprek"
             CC=clang
             LD=ld.lld
             AR=llvm-ar
@@ -311,7 +240,7 @@ jobs:
           )
           OPT_CFLAGS="-O3 -Wno-everything -mtune=cortex-a75"
 
-          make O=out ARCH=arm64 tama_akatsuki_defconfig
+          make O=out ARCH=arm64 "$DEFCONFIG_NAME"
           grep -q "CONFIG_KSU=y" out/.config || (echo "ERROR: CONFIG_KSU=y belum aktif!" && exit 1)
 
           make "${MAKE_ARGS[@]}" prepare
@@ -335,14 +264,14 @@ jobs:
           sed -i 's#^do.devicecheck=.*#do.devicecheck=0#Ig' anykernel/anykernel.sh
           sed -i 's#^block=.*#block=auto;#Ig' anykernel/anykernel.sh
           sed -i 's#^is_slot_device=.*#is_slot_device=auto;#Ig' anykernel/anykernel.sh
-          sed -i 's#^kernel.string=.*#kernel.string=Jawirprek Kernel +O3 (Opreker Gapunya Alat | Inc. KSU + NetHunter | Clang 21) - TG: @Jawirprek#Ig' anykernel/anykernel.sh
+          sed -i 's#^kernel.string=.*#kernel.string=Jawirprek Kernel | Xperia XZ3 (akatsuki) | KSU + NetHunter#Ig' anykernel/anykernel.sh
           cd anykernel
-          zip -r9 ../Jawirprek-Kernel+O3-Clang21-$(date +%Y%m%d).zip * -x .git README.md *placeholder
+          zip -r9 ../Jawirprek-Kernel-akatsuki-$(date +%Y%m%d).zip * -x .git README.md *placeholder
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Jawirprek-Kernel+O3-Clang21
+          name: Jawirprek-Kernel-akatsuki
           path: |
-            Jawirprek-Kernel+O3-Clang21-*.zip
+            Jawirprek-Kernel-akatsuki-*.zip
             KernelSU_v0.9.5*.apk
