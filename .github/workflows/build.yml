@@ -45,10 +45,12 @@ jobs:
           patch -p1 < nh-patches/patches/4.9/fix-hid-gadget-4.9.patch || true
           rm -rf nh-patches
 
-      - name: Merge Defconfig & Strip Werror Safely
+      - name: Merge Defconfig & Fix Conflicts
         working-directory: kernel
         run: |
           cat ../nethunter.fragment >> arch/arm64/configs/tama_akatsuki_defconfig
+          sed -i '/CONFIG_ATH9K_HTC/d' arch/arm64/configs/tama_akatsuki_defconfig
+          echo "# CONFIG_ATH9K_HTC is not set" >> arch/arm64/configs/tama_akatsuki_defconfig
           find . \( -name "Makefile*" -o -name "Kbuild*" \) -type f -exec sed -i \
             -e 's/-Werror-implicit-function-declaration/-Wno-error=implicit-function-declaration/g' \
             -e 's/-Werror=/-Wno-error=/g' \
