@@ -1,0 +1,64 @@
+name: Build Jawirprek+Nethunter XZ3
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Config Repo
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 device-tree-compiler
+
+      - name: Clone Kernel Source & Toolchain
+        run: |
+          git clone --depth=1 -b lineage-20 https://github.com/LineageOS/android_kernel_sony_sdm845.git kernel
+          git clone --depth=1 https://gitlab.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r450784d.git clang
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
+
+      - name: Integrate KernelSU Next (Latest)
+        working-directory: kernel
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -
+
+      - name: Apply NetHunter HID & Wi-Fi Injection Patches
+        working-directory: kernel
+        run: |
+          git clone --depth=1 https://gitlab.com/kalilinux/nethunter/build-scripts/kali-nethunter-kernel.git nh-patches
+          patch -p1 < nh-patches/patches/4.9/add-wifi-injection-4.9.patch || true
+          patch -p1 < nh-patches/patches/4.9/fix-hid-gadget-4.9.patch || true
+          rm -rf nh-patches
+
+      - name: Merge NetHunter Defconfig
+        working-directory: kernel
+        run: |
+          cat ../nethunter.fragment >> arch/arm64/configs/tama_akatsuki_defconfig
+
+      - name: Compile Kernel
+        working-directory: kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH="$PWD/../clang/bin:$PATH"
+          make O=out ARCH=arm64 tama_akatsuki_defconfig
+          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- Image.gz-dtb
+
+      - name: Package AnyKernel3 Zip
+        run: |
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb anykernel/
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel/anykernel.sh
+          sed -i 's/block=\/dev\/block\/platform\/omap\/omap_hsmmc.0\/by-name\/boot;/block=auto;/g' anykernel/anykernel.sh
+          sed -i 's/kernel.string=.*/kernel.string=Jawirprek+Nethunter (KSUNext) for XZ3/g' anykernel/anykernel.sh
+          cd anykernel
+          zip -r9 ../Jawirprek+Nethunter-XZ3-$(date +%Y%m%d).zip * -x .git README.md *placeholder
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Jawirprek+Nethunter-XZ3
+          path: Jawirprek+Nethunter-XZ3-*.zip
