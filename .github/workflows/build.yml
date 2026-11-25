@@ -15,11 +15,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 device-tree-compiler wget gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi
 
-      - name: Clone aoitsme 4.9 Kernel Source & ZyCromerZ Clang 21
+      - name: Clone aoitsme 4.9 Kernel, Sony Tama Configs & ZyCromerZ Clang 21
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git clone --depth=1 https://github.com/aoitsme/android_kernel_qcom_sdm845.git kernel
+          git clone --depth=1 https://github.com/aoitsme/android_device_sony_tama-common.git dt-tama || true
+          git clone --depth=1 https://github.com/aoitsme/android_device_sony_akatsuki.git dt-akatsuki || true
           mkdir -p clang
           python3 - << 'EOF'
           import json, os, urllib.request
@@ -153,65 +155,42 @@ jobs:
                   print("Patched default vfs_cache_pressure -> 50 in fs/dcache.c")
           EOF
 
-      - name: Merge Defconfig (Auto-Detect aoitsme Sony Tama/Akatsuki + Native NFC)
+      - name: Merge Defconfig (sdm845-perf + aoitsme Sony Tama/Akatsuki NFC + Gaming Cooling)
         working-directory: kernel
         run: |
+          DEFCONFIG_NAME="vendor/sdm845-perf_defconfig"
+          CFG_PATH="arch/arm64/configs/$DEFCONFIG_NAME"
+          [ -f "$CFG_PATH" ] || (echo "ERROR: $CFG_PATH tidak ditemukan!" && exit 1)
+          echo "DEFCONFIG_NAME=$DEFCONFIG_NAME" >> "$GITHUB_ENV"
+
           python3 - << 'EOF'
           import glob, os, re
 
-          all_files = sorted(
-              os.path.relpath(p, "arch/arm64/configs")
-              for p in glob.glob("arch/arm64/configs/**/*", recursive=True)
-              if os.path.isfile(p)
-          )
-          print("Available configs in aoitsme kernel:", all_files)
-
-          def pick_defconfig(files):
-              for pat in (
-                  r'(?:^|/)[^/]*akatsuki[^/]*defconfig$',
-                  r'(?:^|/)lineage[^/]*tama[^/]*defconfig$',
-                  r'(?:^|/)[^/]*tama[^/]*defconfig$',
-                  r'(?:^|/)sdm845-perf_defconfig$',
-                  r'(?:^|/)sdm845_defconfig$',
-              ):
-                  matches = [f for f in files if re.search(pat, f)]
-                  if matches:
-                      matches.sort(key=len)
-                      return matches[0]
-              return None
-
-          defcfg = pick_defconfig(all_files)
-          assert defcfg, f"Defconfig Sony SDM845 tidak ditemukan di: {all_files}"
-          print("Selected base defconfig:", defcfg)
-
-          cfg_path = os.path.join("arch/arm64/configs", defcfg)
-          base_txt = open(cfg_path, errors="ignore").read()
-
-          # Gabungkan fragment konfigurasi tama / akatsuki jika tersedia secara terpisah
-          extra_frags = [
-              f for f in all_files
-              if f != defcfg and f.endswith(".config") and re.search(r'(?:tama|akatsuki)', f)
-          ]
+          cfg_path = "arch/arm64/configs/vendor/sdm845-perf_defconfig"
           with open(cfg_path, "a") as out_f:
-              for frag in extra_frags:
-                  print("Appending device config fragment:", frag)
-                  out_f.write("\n" + open(os.path.join("arch/arm64/configs", frag), errors="ignore").read() + "\n")
+              # Gabungkan fragment config Sony Tama & Akatsuki dari device tree aoitsme
+              for dt_dir in ("../dt-tama", "../dt-akatsuki"):
+                  if not os.path.isdir(dt_dir):
+                      continue
+                  for f in sorted(glob.glob(f"{dt_dir}/**/*.config", recursive=True)):
+                      bn = os.path.basename(f).lower()
+                      if any(other in bn for other in ("akari", "apollo", "aurora")):
+                          continue
+                      print("Merging aoitsme Sony config fragment:", f)
+                      out_f.write("\n" + open(f, errors="ignore").read() + "\n")
 
-              # Aktifkan simbol board akatsuki jika ada di Kconfig terpadu tama
-              kconfigs = glob.glob("arch/arm64/**/Kconfig*", recursive=True) + glob.glob("drivers/**/Kconfig*", recursive=True)
-              has_akatsuki_sym = any(
-                  "MACH_SONY_AKATSUKI" in open(kc, errors="ignore").read()
-                  for kc in kconfigs
+              # Pastikan simbol platform Sony Tama & Xperia XZ3 (akatsuki) aktif
+              kconfig_blob = "\n".join(
+                  open(kc, errors="ignore").read()
+                  for kc in glob.glob("arch/arm64/**/Kconfig*", recursive=True) + glob.glob("drivers/**/Kconfig*", recursive=True)
               )
-              if has_akatsuki_sym:
-                  print("Enabling CONFIG_MACH_SONY_AKATSUKI=y")
-                  out_f.write("\nCONFIG_MACH_SONY_AKATSUKI=y\n")
-
-          with open(os.environ["GITHUB_ENV"], "a") as env_f:
-              env_f.write(f"DEFCONFIG_NAME={defcfg}\n")
-              env_f.write(f"CFG_PATH={cfg_path}\n")
+              for sym in ("ARCH_SONY_TAMA", "MACH_SONY_AKATSUKI"):
+                  if sym in kconfig_blob:
+                      print(f"Enabling CONFIG_{sym}=y")
+                      out_f.write(f"\nCONFIG_{sym}=y\n")
           EOF
 
+          rm -rf ../dt-tama ../dt-akatsuki
           cat ../nethunter.fragment >> "$CFG_PATH"
           for sym in LOCALVERSION KALLSYMS SCHED_DEBUG DEBUG_PREEMPT LTO THINLTO HZ DEFAULT_CFQ CPU_BOOST CPU_FREQ_GOV CRYPTO_LZ4 ZRAM CRYPTO_CRC32_ARM64 ARM64_CRYPTO; do
             sed -i "/CONFIG_${sym}/d" "$CFG_PATH"
@@ -292,8 +271,8 @@ jobs:
 
           make O=out ARCH=arm64 "$DEFCONFIG_NAME"
           grep -q "CONFIG_KSU=y" out/.config || (echo "ERROR: CONFIG_KSU=y belum aktif!" && exit 1)
-          echo "=== KONFIGURASI NFC & BOARD AKATSUKI ==="
-          grep -E "CONFIG_NFC|CXD224|FELICA|MACH_SONY" out/.config || true
+          echo "=== KONFIGURASI SONY AKATSUKI & NFC ==="
+          grep -E "SONY|AKATSUKI|TAMA|CONFIG_NFC|CXD224|FELICA" out/.config || true
 
           make "${MAKE_ARGS[@]}" prepare
           make "${MAKE_ARGS[@]}" KCFLAGS="$OPT_CFLAGS" init/ security/selinux/
