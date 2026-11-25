@@ -28,16 +28,17 @@ jobs:
         working-directory: kernel
         run: |
           export GIT_TERMINAL_PROMPT=0
-          if git clone --depth=1 -b nongki https://github.com/ReSukiSU/ReSukiSU.git KernelSU; then
+          rm -rf KernelSU drivers/kernelsu
+          if git clone -b nongki https://github.com/ReSukiSU/ReSukiSU.git KernelSU; then
             echo "Using ReSukiSU (nongki)"
           else
-            git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git KernelSU
+            git clone https://github.com/ReSukiSU/ReSukiSU.git KernelSU
           fi
-          rm -rf drivers/kernelsu
-          cp -r KernelSU/kernel drivers/kernelsu
+          ln -sfn ../KernelSU/kernel drivers/kernelsu
+          [ -d KernelSU/.git ] || (echo "ERROR: Folder KernelSU/.git tidak ditemukan!" && exit 1)
           grep -q 'kernelsu/Kconfig' drivers/Kconfig || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           grep -q 'kernelsu' drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
-          sed -i '1i ccflags-y += -std=gnu11 -Wno-error -DKSU_VERSION=13000' drivers/kernelsu/Makefile
+          sed -i --follow-symlinks '1i ccflags-y += -std=gnu11 -Wno-error' drivers/kernelsu/Makefile
 
           mkdir -p include/linux/sched
           for h in signal.h task.h mm.h user.h coredump.h jobctl.h debug.h; do
@@ -121,7 +122,6 @@ jobs:
           set -o pipefail
           export ARCH=arm64
           export SUBARCH=arm64
-          export KSU_GIT_VERSION=13000
           export KBUILD_BUILD_USER="Opreker-Gapunya-Alat"
           export KBUILD_BUILD_HOST="Inc.ReSukiSU+NetHunter"
           export PATH="$PWD/../clang/bin:$PATH"
