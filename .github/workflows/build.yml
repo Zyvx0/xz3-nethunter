@@ -27,7 +27,15 @@ jobs:
       - name: Integrate KernelSU Next (Latest)
         working-directory: kernel
         run: |
-          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/main/kernel/setup.sh" | bash -
+          git clone --depth=1 https://github.com/rifsxd/KernelSU-Next.git ksun-repo
+          SETUP_SCRIPT=$(find ksun-repo -maxdepth 3 -name "setup.sh" | head -n 1)
+          if [ -n "$SETUP_SCRIPT" ]; then
+            bash "$SETUP_SCRIPT"
+          else
+            rm -rf ksun-repo
+            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+          fi
+          rm -rf ksun-repo
 
       - name: Apply NetHunter HID & Wi-Fi Injection Patches
         working-directory: kernel
