@@ -45,10 +45,12 @@ jobs:
           patch -p1 < nh-patches/patches/4.9/fix-hid-gadget-4.9.patch || true
           rm -rf nh-patches
 
-      - name: Merge NetHunter Defconfig
+      - name: Merge Defconfig & Strip Werror
         working-directory: kernel
         run: |
           cat ../nethunter.fragment >> arch/arm64/configs/tama_akatsuki_defconfig
+          sed -i 's/-Werror//g' Makefile
+          find drivers/staging/qcacld-3.0 -name "Kbuild" -exec sed -i 's/-Werror//g' {} +
 
       - name: Compile Kernel
         working-directory: kernel
@@ -57,7 +59,7 @@ jobs:
           export SUBARCH=arm64
           export PATH="$PWD/../clang/bin:$PATH"
           make O=out ARCH=arm64 tama_akatsuki_defconfig
-          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error=implicit-function-declaration -Wno-error" Image.gz-dtb
+          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-error=strict-prototypes -Wno-error=implicit-function-declaration" Image.gz-dtb
 
       - name: Package AnyKernel3 Zip
         run: |
