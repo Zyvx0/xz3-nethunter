@@ -24,7 +24,63 @@ jobs:
           cd ..
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
 
-      - name: Integrate Modern KernelSU Fork (rsuntk Non-GKI 4.9 + KowSU Hash)
+      - name: Fetch KowSU APK & Extract Exact Certificate Hash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - << 'EOF'
+          import json, os, struct, hashlib, urllib.request
+
+          req = urllib.request.Request(
+              "https://api.github.com/repos/KOWX712/KernelSU/releases?per_page=5",
+              headers={"Authorization": f"Bearer {os.environ['GH_TOKEN']}", "User-Agent": "Mozilla/5.0"}
+          )
+          releases = json.loads(urllib.request.urlopen(req).read().decode())
+          apk_url = None
+          for rel in releases:
+              for asset in rel.get("assets", []):
+                  if asset["name"].endswith(".apk"):
+                      apk_url = asset["browser_download_url"]
+                      break
+              if apk_url:
+                  break
+
+          assert apk_url, "APK KowSU tidak ditemukan di GitHub Releases"
+          print("Downloading:", apk_url)
+          urllib.request.urlretrieve(apk_url, "KowSU-Manager.apk")
+
+          data = open("KowSU-Manager.apk", "rb").read()
+          idx = data.rfind(b"APK Sig Block 42")
+          assert idx != -1, "APK Sig Block 42 tidak ditemukan"
+          block_size = struct.unpack("<Q", data[idx-8:idx])[0]
+          block = data[idx+16-block_size : idx-8]
+
+          pos = 0
+          cert = None
+          while pos < len(block):
+              pair_len, pair_id = struct.unpack("<QI", block[pos:pos+12])
+              val = block[pos+12 : pos+8+pair_len]
+              if pair_id == 0x7109871a:
+                  signed_data_len = struct.unpack("<I", val[8:12])[0]
+                  signed_data = val[12 : 12+signed_data_len]
+                  digests_len = struct.unpack("<I", signed_data[0:4])[0]
+                  certs_off = 4 + digests_len
+                  first_cert_len = struct.unpack("<I", signed_data[certs_off+4:certs_off+8])[0]
+                  cert = signed_data[certs_off+8 : certs_off+8+first_cert_len]
+                  break
+              pos += 8 + pair_len
+
+          assert cert is not None, "Sertifikat v2 tidak ditemukan"
+          cert_size = f"0x{len(cert):04x}"
+          cert_hash = hashlib.sha256(cert).hexdigest()
+          print(f"KOWSU_SIZE={cert_size}")
+          print(f"KOWSU_HASH={cert_hash}")
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"KOWSU_SIZE={cert_size}\n")
+              f.write(f"KOWSU_HASH={cert_hash}\n")
+          EOF
+
+      - name: Integrate KernelSU (rsuntk Non-GKI 4.9 + KowSU Signature)
         working-directory: kernel
         run: |
           export GIT_TERMINAL_PROMPT=0
@@ -34,14 +90,15 @@ jobs:
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           grep -q 'drivers/kernelsu/' drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
 
-          sed -i --follow-symlinks 's/KSU_EXPECTED_SIZE := .*/KSU_EXPECTED_SIZE := 0x033b/' drivers/kernelsu/Makefile drivers/kernelsu/Kbuild 2>/dev/null || true
-          sed -i --follow-symlinks 's/KSU_EXPECTED_HASH := .*/KSU_EXPECTED_HASH := c371061b19d8c7d7d6133c6a9bafe198fa944e50c1b31c9d8daa8d7f1fc2d2d6/' drivers/kernelsu/Makefile drivers/kernelsu/Kbuild 2>/dev/null || true
-
           for f in drivers/kernelsu/Makefile drivers/kernelsu/Kbuild; do
             if [ -f "$f" ]; then
+              sed -i --follow-symlinks -E "s/(KSU_)?EXPECTED_SIZE[[:space:]]*[:?]=.*/\1EXPECTED_SIZE := ${KOWSU_SIZE}/g" "$f"
+              sed -i --follow-symlinks -E "s/(KSU_)?EXPECTED_HASH[[:space:]]*[:?]=.*/\1EXPECTED_HASH := ${KOWSU_HASH}/g" "$f"
               printf '\nccflags-y += -std=gnu11 -Wno-error -I$(objtree)/security/selinux -I$(srctree)/security/selinux/include\n' >> "$f"
             fi
           done
+          echo "=== VERIFIKASI SIGNATURE KOWSU DI KBUILD ==="
+          grep -rnE "EXPECTED_(SIZE|HASH)" drivers/kernelsu/
 
           mkdir -p include/linux/sched
           for h in signal.h task.h mm.h user.h coredump.h jobctl.h debug.h; do
@@ -94,7 +151,7 @@ jobs:
           done
           rm -rf nh-patches
 
-      - name: Merge Defconfig, NFC KDDI & Kernel Identity
+      - name: Merge Defconfig, NFC KDDI (CXD224x) & Kernel Identity
         working-directory: kernel
         run: |
           cat ../nethunter.fragment >> arch/arm64/configs/tama_akatsuki_defconfig
@@ -115,9 +172,15 @@ jobs:
             'CONFIG_NFC_NCI=y' \
             'CONFIG_NFC_NQ=y' \
             >> arch/arm64/configs/tama_akatsuki_defconfig
-          if find drivers/nfc -iname "*cxd224x*" | grep -q .; then
-            echo "CONFIG_NFC_CXD224X=y" >> arch/arm64/configs/tama_akatsuki_defconfig
-          fi
+
+          for cfg in $(grep -rnE '^[[:space:]]*config[[:space:]]+(NFC_CXD224X|SONY_FELICA|NFC_SONY|SNFC)' drivers/ | sed -E 's/.*config[[:space:]]+([A-Z0-9_]+).*/CONFIG_\1=y/' | sort -u); do
+            echo "Enabling NFC SOV39 config: $cfg"
+            echo "$cfg" >> arch/arm64/configs/tama_akatsuki_defconfig
+          done
+
+          echo "=== CEK KONFIGURASI NFC DI DEVICE TREE TAMA ==="
+          grep -rnE "cxd224x|nq@28" arch/arm64/boot/dts/qcom/ || true
+
           sed -i '/CONFIG_ATH9K_HTC/d' arch/arm64/configs/tama_akatsuki_defconfig
           echo "# CONFIG_ATH9K_HTC is not set" >> arch/arm64/configs/tama_akatsuki_defconfig
           find . \( -name "Makefile*" -o -name "Kbuild*" \) -type f -exec sed -i \
@@ -135,7 +198,7 @@ jobs:
           export KBUILD_BUILD_HOST="Inc.KSU+NetHunter"
           export PATH="$PWD/../clang/bin:$PATH"
           make O=out ARCH=arm64 tama_akatsuki_defconfig
-          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_KRETPROBES|CONFIG_LOCALVERSION" out/.config
+          grep -E "CONFIG_KSU|CONFIG_NFC" out/.config
           grep -q "CONFIG_KSU=y" out/.config || (echo "ERROR: CONFIG_KSU=y belum aktif!" && exit 1)
 
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- prepare
@@ -166,4 +229,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Jawirprek-SOV39-KSU+NetHunter
-          path: Jawirprek-SOV39-KSU+NetHunter-*.zip
+          path: |
+            Jawirprek-SOV39-KSU+NetHunter-*.zip
+            KowSU-Manager.apk
